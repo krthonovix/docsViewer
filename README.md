@@ -1,4 +1,4 @@
-﻿# Docs Viewer
+# Docs Viewer
 
 An Android 8.0+ offline document viewer prototype. Use **Open** to choose a local file or open a supported file from another app.
 
@@ -12,3 +12,8 @@ No network permission is requested. PDFs are copied to the app cache to support 
 ## Build
 
 Install JDK 17, Android SDK platform 35, Android build tools, and Gradle 8.9. Run `gradle assembleDebug`. The installable debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Alternatively push the project to GitHub and run the included Build APK workflow; download the `DocsViewer-debug` artifact. A debug APK is intended for testing, not distribution as a production release.
+
+
+## Download a CI build
+
+Open the repository's Actions tab, select a successful Build APK run, and download the DocsViewer-debug artifact. Extract the ZIP and install app-debug.apk on an Android 8.0 or newer device. GitHub may require you to sign in to download artifacts. The workflow also runs on pull requests and can be started manually from the Actions tab.
