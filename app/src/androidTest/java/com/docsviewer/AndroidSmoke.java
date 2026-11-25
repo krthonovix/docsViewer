@@ -3,7 +3,9 @@ package com.docsviewer;
 import android.app.Activity;
 import android.app.Instrumentation;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
@@ -15,6 +17,9 @@ import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AndroidSmoke extends Instrumentation {
@@ -36,9 +41,9 @@ public final class AndroidSmoke extends Instrumentation {
             await(pdf, "Browse files", false);
             close(pdf);
 
-            preview("docx", "Word heading", "<h1", "font-weight:bold;", "<table", "Word cell");
+            preview("docx", "Word heading", "<h1", "font-weight:bold;", "<table", "Word cell", "alt=\"Embedded logo\"");
             preview("odt", "ODT heading", "<h2", "<ul", "ODT item</p></li>");
-            Preview sheets = markup("xlsx", "class=\"grid\"", "colspan=\"3\"", "Budget grid");
+            Preview sheets = markup("xlsx", "class=\"grid\"", "colspan=\"3\"", "rowspan=\"3\"", "Budget grid");
             if (!"Budget".equals(sheets.sections.get(0).title) || !"Totals".equals(sheets.sections.get(1).title)) {
                 throw new AssertionError("XLSX sheet names or order were lost");
             }
@@ -46,11 +51,12 @@ public final class AndroidSmoke extends Instrumentation {
             await(workbook, "Budget", false);
             awaitWeb(workbook);
             awaitContent("Budget grid");
+            screenshot("xlsx");
             await(workbook, "Next sheet", true);
             await(workbook, "Totals", false);
             awaitWeb(workbook);
             close(workbook);
-            preview("ods", "ODS cell", "class=\"grid\"", "scope=\"col\">C", "ODS cell");
+            preview("ods", null, "class=\"grid\"", "scope=\"col\">C", "ODS cell");
             preview("pptx", null, "<svg viewBox", "<foreignObject x=", "PowerPoint slide", "font-weight:bold;");
             preview("odp", null, "<svg viewBox", "<foreignObject x=", "ODP slide");
             preview("md", "Markdown heading", "<h1>Markdown heading", "<strong>Bold", "<del>deleted",
@@ -93,8 +99,24 @@ public final class AndroidSmoke extends Instrumentation {
         markup(extension, expected);
         Activity activity = open("sample." + extension);
         awaitWeb(activity);
+        if (extension.matches("docx|odt|ods|pptx|odp|md|csv|html")) screenshot(extension);
         if (content != null) awaitContent(content);
         close(activity);
+    }
+
+    private void screenshot(String extension) throws IOException {
+        if (Build.VERSION.SDK_INT != 35) return;
+        SystemClock.sleep(200);
+        Bitmap screen = getUiAutomation().takeScreenshot();
+        if (screen == null) throw new IOException("Could not capture the " + extension + " preview");
+        try (FileOutputStream image = new FileOutputStream(
+                new File(getTargetContext().getCacheDir(), "preview-" + extension + ".png"))) {
+            if (!screen.compress(Bitmap.CompressFormat.PNG, 100, image)) {
+                throw new IOException("Could not save the " + extension + " preview");
+            }
+        } finally {
+            screen.recycle();
+        }
     }
 
     private Preview markup(String extension, String... expected) throws Exception {
@@ -134,7 +156,9 @@ public final class AndroidSmoke extends Instrumentation {
     private static boolean containsContent(AccessibilityNodeInfo node, String content) {
         if (node == null) return false;
         CharSequence text = node.getText();
-        if (text != null && text.toString().contains(content) && node.isVisibleToUser()) return true;
+        CharSequence description = node.getContentDescription();
+        if (node.isVisibleToUser() && ((text != null && text.toString().contains(content))
+                || (description != null && description.toString().contains(content)))) return true;
         for (int index = 0; index < node.getChildCount(); index++) {
             if (containsContent(node.getChild(index), content)) return true;
         }

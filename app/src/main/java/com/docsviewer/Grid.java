@@ -63,12 +63,15 @@ final class Grid {
             int bottom = top + ROWS_PER_SECTION;
             Map<Integer, Map<Integer, Cell>> area = rows.subMap(top, true, bottom, false);
             TreeMap<Integer, Integer> lastColumn = new TreeMap<>();
-            for (Map<Integer, Cell> row : area.values()) {
-                for (Map.Entry<Integer, Cell> cell : row.entrySet()) {
+            Map<Integer, Integer> mergedBottom = new HashMap<>();
+            for (Map.Entry<Integer, Map<Integer, Cell>> row : area.entrySet()) {
+                for (Map.Entry<Integer, Cell> cell : row.getValue().entrySet()) {
                     int column = cell.getKey();
                     int band = column / COLUMNS_PER_SECTION;
                     int end = Math.min((band + 1) * COLUMNS_PER_SECTION - 1, column + cell.getValue().colspan - 1);
                     lastColumn.merge(band, end, Math::max);
+                    int rowEnd = Math.min(bottom - 1, row.getKey() + cell.getValue().rowspan - 1);
+                    mergedBottom.merge(band, rowEnd, Math::max);
                 }
             }
             if (lastColumn.isEmpty()) continue;
@@ -77,7 +80,7 @@ final class Grid {
                 int right = band.getValue();
                 if (right - Math.max(left, firstColumn) > 32) left = Math.max(left, firstColumn - 6);
                 int first = Math.max(top, previousRow);
-                int last = rows.floorKey(bottom - 1);
+                int last = Math.max(rows.floorKey(bottom - 1), mergedBottom.get(band.getKey()));
                 String title = name;
                 if (describe) {
                     String range = columnName(left) + (first + 1) + "–" + columnName(right) + (last + 1);

@@ -3,12 +3,14 @@ package com.docsviewer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 final class SmokeDocuments {
     private static final String REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     private static final String WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    private static final String LOGO_PNG = "iVBORw0KGgoAAAANSUhEUgAAAKAAAABACAIAAAAS6ev4AAAAuElEQVR4nO3RAQnAMBDAwHcxWVNRV/NTH1MyFaMQDk5AIHOtm7A5XsCvDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOM7gOIPjDI4zOG6edxNmcJzBcQbHGRxncJzBcQbHGRxncJzBcQbHGRxncJzBcQbHGRxncJzBcQbHGRxncJzBcQbvtg9ME+EciworWAAAAABJRU5ErkJggg==";
     private static final String ODF = " xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\""
             + " xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\""
             + " xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\""
@@ -19,11 +21,18 @@ final class SmokeDocuments {
         switch (name) {
             case "sample.docx":
                 archive(output, "word/document.xml",
-                        "<w:document xmlns:w=\"" + WORD + "\"><w:body>"
+                        "<w:document xmlns:w=\"" + WORD + "\" xmlns:r=\"" + REL
+                                + "\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\""
+                                + " xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\"><w:body>"
                                 + "<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr><w:r><w:t>Word heading</w:t></w:r></w:p>"
                                 + "<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Bold word</w:t></w:r></w:p>"
                                 + "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Word cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
-                                + "</w:body></w:document>");
+                                + "<w:p><w:r><w:drawing><wp:inline><wp:extent cx=\"1524000\" cy=\"609600\"/>"
+                                + "<wp:docPr descr=\"Embedded logo\"/><a:graphic><a:blip r:embed=\"logo\"/></a:graphic>"
+                                + "</wp:inline></w:drawing></w:r></w:p></w:body></w:document>",
+                        "word/_rels/document.xml.rels",
+                        "<Relationships><Relationship Id=\"logo\" Target=\"media/logo.png\"/></Relationships>",
+                        "word/media/logo.png", LOGO_PNG);
                 break;
             case "sample.xlsx":
                 archive(output, "xl/workbook.xml",
@@ -38,7 +47,8 @@ final class SmokeDocuments {
                                 + "</c></row></sheetData></worksheet>",
                         "xl/worksheets/sheet2.xml", "<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\">"
                                 + "<is><t>Budget grid</t></is></c></row><row r=\"4\"><c r=\"C4\"><v>100</v></c></row>"
-                                + "</sheetData><mergeCells><mergeCell ref=\"A1:C1\"/></mergeCells></worksheet>");
+                                + "</sheetData><mergeCells><mergeCell ref=\"A1:C1\"/><mergeCell ref=\"C4:C6\"/>"
+                                + "</mergeCells></worksheet>");
                 break;
             case "sample.pptx":
                 archive(output, "ppt/slides/slide1.xml",
@@ -92,7 +102,8 @@ final class SmokeDocuments {
         try (ZipOutputStream archive = new ZipOutputStream(output)) {
             for (int i = 0; i < entries.length; i += 2) {
                 archive.putNextEntry(new ZipEntry(entries[i]));
-                text(archive, entries[i + 1]);
+                if (entries[i].endsWith(".png")) archive.write(Base64.getDecoder().decode(entries[i + 1]));
+                else text(archive, entries[i + 1]);
                 archive.closeEntry();
             }
         }

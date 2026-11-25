@@ -14,16 +14,14 @@ import java.util.List;
 import java.util.Map;
 
 final class PartNode {
-    static final PartNode EMPTY = new PartNode("", "", "", Collections.emptyMap());
+    static final PartNode EMPTY = new PartNode("", "", Collections.emptyMap());
     final String name;
-    final String namespace;
     final String value;
-    final Map<String, String> attributes;
+    private final Map<String, String> attributes;
     private List<PartNode> content;
 
-    private PartNode(String name, String namespace, String value, Map<String, String> attributes) {
+    private PartNode(String name, String value, Map<String, String> attributes) {
         this.name = name;
-        this.namespace = namespace;
         this.value = value;
         this.attributes = attributes;
     }
@@ -33,7 +31,9 @@ final class PartNode {
         XmlPullParser parser = Xml.newPullParser();
         try {
             parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true);
-            parser.setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false);
+            if (parser.getFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL)) {
+                parser.setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false);
+            }
             parser.setInput(new ByteArrayInputStream(bytes), null);
             List<PartNode> stack = new ArrayList<>();
             PartNode root = EMPTY;
@@ -58,7 +58,7 @@ final class PartNode {
                             attributes.put("rel:" + name, value);
                         }
                     }
-                    PartNode node = new PartNode(parser.getName(), parser.getNamespace(), "", attributes);
+                    PartNode node = new PartNode(parser.getName(), "", attributes);
                     if (stack.isEmpty()) root = node;
                     else stack.get(stack.size() - 1).add(node);
                     stack.add(node);
@@ -70,7 +70,7 @@ final class PartNode {
                     String text = parser.getText();
                     if (text != null && !text.isEmpty()) {
                         if (++nodes > 220_000) throw new IOException("The document contains too much text.");
-                        stack.get(stack.size() - 1).add(new PartNode("#text", "", text, Collections.emptyMap()));
+                        stack.get(stack.size() - 1).add(new PartNode("#text", text, Collections.emptyMap()));
                     }
                 }
             }

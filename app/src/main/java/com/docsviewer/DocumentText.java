@@ -30,12 +30,12 @@ final class DocumentText {
     private static final int SECTION_SIZE = 32_000;
     private static final Pattern SOURCE_TOKEN = Pattern.compile(
             "(?<comment><!--.*?-->|/\\*.*?\\*/|//[^\\r\\n]*)"
-            + "|(?<string>\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')"
+            + "|(?<string>\"(?:\\\\.|[^\"\\\\])*+\"|'(?:\\\\.|[^'\\\\])*+')"
             + "|(?<tag></?[\\w:.-]+|/?>)"
             + "|(?<keyword>\\b(?:class|interface|enum|record|public|private|protected|"
             + "abstract|static|final|new|return|throw|try|catch|finally|for|while|if|else|switch|case|"
             + "import|package|fun|val|var|let|const|function|def|true|false|null|undefined|async|await)\\b)"
-            + "|(?<number>\\b\\d+(?:\\.\\d+)?\\b)", Pattern.DOTALL);
+            + "|(?<number>#[0-9a-fA-F]{3,8}\\b|\\b\\d+(?:\\.\\d+)?\\b)", Pattern.DOTALL);
 
     static String detectFormat(String name, String mime) {
         if (mime != null) {
@@ -103,6 +103,9 @@ final class DocumentText {
                 sections(preview, prettyXml(source), true, true);
                 break;
             case "java": case "kt": case "js": case "css":
+            case "py": case "c": case "cc": case "cpp": case "h": case "rs": case "go":
+            case "sh": case "ps1": case "sql": case "rb": case "php": case "lua":
+            case "yml": case "yaml": case "toml": case "ini":
                 sections(preview, source, true, true);
                 break;
             case "log":

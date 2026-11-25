@@ -178,7 +178,8 @@ final class OdfPreview {
                 if (!cell.name.equals("table-cell") && !cell.name.equals("covered-table-cell")) continue;
                 int count = Math.min(16_384 - column, repeat(cell, "number-columns-repeated"));
                 if (!cell.name.equals("covered-table-cell")) {
-                    String value = childFlow(cell, "").trim();
+                    String value = cell.text().trim().isEmpty() && cell.first("image") == PartNode.EMPTY
+                            ? "" : childFlow(cell, "").trim();
                     if (value.isEmpty()) value = Markup.escape(scalar(cell));
                     String css = css(cell.attr("style-name"));
                     if (!value.isEmpty() || (!css.isEmpty() && count <= 40)) {
@@ -190,7 +191,7 @@ final class OdfPreview {
                 column += count;
             }
             int count = Math.min(1_048_576 - rowNumber, repeat(row, "number-rows-repeated"));
-            if (!cells.isEmpty()) {
+            if (!cells.isEmpty() && (count <= 100 || cells.values().stream().anyMatch(cell -> !cell.html.isEmpty()))) {
                 for (int i = 0; i < count; i++) {
                     for (Map.Entry<Integer, Grid.Cell> cell : cells.entrySet()) {
                         grid.put(rowNumber + i, cell.getKey(), cell.getValue());

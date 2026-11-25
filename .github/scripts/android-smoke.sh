@@ -37,6 +37,12 @@ adb shell cmd uimode night no
 adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 timeout 180s adb shell am instrument -w "$package.test/$package.AndroidSmoke" | tee "$diagnostics/reader.txt"
 grep -q 'Reader smoke tests passed' "$diagnostics/reader.txt"
+if [[ $(adb shell getprop ro.build.version.sdk | tr -d '\r') == 35 ]]; then
+    mkdir -p "$diagnostics/previews"
+    for format in docx xlsx pptx odt ods odp md csv html; do
+        adb exec-out run-as "$package" cat "cache/preview-$format.png" > "$diagnostics/previews/$format.png"
+    done
+fi
 adb logcat -d -b crash > "$diagnostics/crash.txt"
 if grep -q "Process: $package," "$diagnostics/crash.txt"; then
     echo "Docs Viewer crashed during verification."
