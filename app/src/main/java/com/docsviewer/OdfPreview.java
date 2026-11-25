@@ -260,7 +260,7 @@ final class OdfPreview {
                 canvas.image(box, office.imageUrl(preview, OfficePackage.resolve("content.xml", image.attr("href"))));
                 continue;
             }
-            String css = css(style);
+            String css = "font-size:26px;" + css(style);
             if (shape.name.equals("ellipse") || shape.name.equals("circle")) css += "border-radius:50%;";
             String shapeType = shape.child("enhanced-geometry").attr("type");
             if (shapeType.equals("diamond")) css += "clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%);";

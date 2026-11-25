@@ -55,7 +55,7 @@ public final class AndroidSmoke extends Instrumentation {
             await(workbook, "Budget", false);
             awaitWeb(workbook);
             awaitContent(workbook, "Budget grid");
-            screenshot("xlsx");
+            screenshot(workbook, "xlsx");
             await(workbook, "Next sheet", true);
             await(workbook, "Totals", false);
             awaitWeb(workbook);
@@ -104,7 +104,6 @@ public final class AndroidSmoke extends Instrumentation {
         markup(extension, expected);
         Activity activity = open("sample." + extension);
         awaitWeb(activity);
-        if (extension.matches("docx|odt|ods|pptx|odp|md|csv|html")) screenshot(extension);
         if (content != null) awaitContent(activity, content);
         if (extension.equals("docx")) {
             assertDom(activity, "Array.from(document.images).some(image => image.naturalWidth === 160)",
@@ -114,11 +113,26 @@ public final class AndroidSmoke extends Instrumentation {
             assertDom(activity, "document.querySelector('foreignObject').getBoundingClientRect().width > 0",
                     "The slide shape did not have a layout");
         }
+        if (extension.matches("docx|odt|ods|pptx|odp|md|csv|html")) screenshot(activity, extension);
+        if (extension.equals("pptx") || extension.equals("odp")) {
+            await(activity, "Zoom in two times", true);
+            await(activity, "Fit page to screen", true);
+        }
         close(activity);
     }
 
-    private void screenshot(String extension) throws IOException {
+    private void screenshot(Activity activity, String extension) throws IOException, InterruptedException {
         if (Build.VERSION.SDK_INT != 35) return;
+        CountDownLatch drawn = new CountDownLatch(1);
+        runOnMainSync(() -> {
+            WebView web = findWebView(activity.getWindow().getDecorView());
+            web.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                @Override public void onComplete(long requestId) {
+                    drawn.countDown();
+                }
+            });
+        });
+        if (!drawn.await(5, TimeUnit.SECONDS)) throw new IOException("The preview did not finish drawing.");
         SystemClock.sleep(200);
         Bitmap screen = getUiAutomation().takeScreenshot();
         if (screen == null) throw new IOException("Could not capture the " + extension + " preview");
@@ -148,8 +162,10 @@ public final class AndroidSmoke extends Instrumentation {
         AtomicBoolean ready = new AtomicBoolean();
         while (SystemClock.uptimeMillis() < deadline) {
             runOnMainSync(() -> {
-                WebView web = findWebView(activity.getWindow().getDecorView());
-                ready.set(web != null && web.getContentHeight() > 0 && web.getProgress() == 100);
+                View decor = activity.getWindow().getDecorView();
+                WebView web = findWebView(decor);
+                ready.set(web != null && web.getContentHeight() > 0 && web.getProgress() == 100
+                        && find(decor, "Drawing preview") == null);
             });
             if (ready.get()) return;
             SystemClock.sleep(100);

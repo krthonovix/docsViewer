@@ -22,6 +22,8 @@ final class PreviewView extends WebView {
             + "img-src https://docs-viewer.invalid data:; style-src 'unsafe-inline'; "
             + "base-uri 'none'; form-action 'none'; object-src 'none'";
     private final String css;
+    private long pageId;
+    private Runnable firstFrame;
 
     @SuppressLint("SetJavaScriptEnabled")
     PreviewView(Context context, Map<String, Preview.Asset> assets, Runnable rendererStopped)
@@ -52,6 +54,18 @@ final class PreviewView extends WebView {
                 return new WebResourceResponse(asset.mime, null, new ByteArrayInputStream(asset.bytes));
             }
 
+            @Override public void onPageFinished(WebView view, String url) {
+                if (firstFrame == null || !url.equals(pageUrl())) return;
+                view.postVisualStateCallback(pageId, new VisualStateCallback() {
+                    @Override public void onComplete(long requestId) {
+                        if (requestId != pageId || firstFrame == null) return;
+                        Runnable ready = firstFrame;
+                        firstFrame = null;
+                        ready.run();
+                    }
+                });
+            }
+
             @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 rendererStopped.run();
                 return true;
@@ -59,7 +73,9 @@ final class PreviewView extends WebView {
         });
     }
 
-    void display(Preview.Section section, String format) {
+    void display(Preview.Section section, String format, Runnable firstFrame) {
+        pageId++;
+        this.firstFrame = firstFrame;
         int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         boolean dark = mode == Configuration.UI_MODE_NIGHT_YES;
         String theme = (dark ? "dark " : "") + (format.matches("docx|odt|xlsx|ods|pptx|odp") ? "office" : "");
@@ -68,7 +84,12 @@ final class PreviewView extends WebView {
                 + "<meta http-equiv=\"Content-Security-Policy\" content=\"" + POLICY + "\">"
                 + "<style>" + css + "</style></head><body class=\"" + theme + "\">"
                 + section.html + "</body></html>";
-        loadDataWithBaseURL(Preview.ORIGIN, page, "text/html", "UTF-8", null);
+        String url = pageUrl();
+        loadDataWithBaseURL(url, page, "text/html", "UTF-8", url);
+    }
+
+    private String pageUrl() {
+        return Preview.ORIGIN + "view/" + pageId;
     }
 
     private static String stylesheet(Context context) throws IOException {

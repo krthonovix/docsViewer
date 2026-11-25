@@ -432,12 +432,21 @@ public final class MainActivity extends Activity {
             showError(token, name, new IOException("Android System WebView could not display the preview.", error));
             return;
         }
-        screen.addView(previewView, new LinearLayout.LayoutParams(MATCH, 0, 1));
-        if (preview.sections.size() > 1) {
+        FrameLayout viewport = new FrameLayout(this);
+        viewport.addView(previewView, new FrameLayout.LayoutParams(MATCH, MATCH));
+        FrameLayout pending = new FrameLayout(this);
+        pending.setBackgroundColor(color(R.color.surface));
+        ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminateTintList(ColorStateList.valueOf(color(R.color.accent)));
+        spinner.setContentDescription("Drawing preview");
+        pending.addView(spinner, new FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER));
+        viewport.addView(pending, new FrameLayout.LayoutParams(MATCH, MATCH));
+        screen.addView(viewport, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        if (preview.sections.size() > 1 || preview.unit.equals("Slide")) {
             screen.addView(navigation(preview.unit, preview.sections.size(), false));
         }
         setBody(screen);
-        previewView.display(section, kind);
+        previewView.display(section, kind, () -> viewport.removeView(pending));
     }
 
     private void clearPreview() {
@@ -477,11 +486,15 @@ public final class MainActivity extends Activity {
         setAvailable(next, position + 1 < count);
         footer.addView(next, new LinearLayout.LayoutParams(dp(48), WRAP));
 
-        if (pdfMode) {
+        if (pdfMode || unit.equals("Slide")) {
             Button zoom = button("", false, v -> {
                 zoomed = !zoomed;
                 updateZoomButton((Button) v);
-                if (pdfViewport != null) displayPdfPage(pdfViewport);
+                if (pdfMode && pdfViewport != null) {
+                    displayPdfPage(pdfViewport);
+                } else if (previewView != null) {
+                    previewView.zoomBy(zoomed ? 2f : .5f);
+                }
             });
             updateZoomButton(zoom);
             LinearLayout.LayoutParams zoomParams = new LinearLayout.LayoutParams(dp(56), WRAP);
@@ -541,6 +554,7 @@ public final class MainActivity extends Activity {
         if (preview != null) {
             if (index < 0 || index >= preview.sections.size()) return;
             position = index;
+            zoomed = false;
             rememberPosition();
             showPreview();
         } else if (page != null && index >= 0 && index < pageCount) {
