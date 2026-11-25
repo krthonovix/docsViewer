@@ -1,4 +1,4 @@
-﻿package com.docsviewer;
+package com.docsviewer;
 
 import android.app.Activity;
 import android.content.Intent;
