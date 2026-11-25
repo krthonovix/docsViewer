@@ -10,6 +10,14 @@ collect_failure() {
     if [[ $code -ne 0 ]]; then
         adb logcat -d -b crash | tee "$diagnostics/crash.txt" || true
         adb exec-out screencap -p > "$diagnostics/screen.png" || true
+        if [[ $(adb shell getprop ro.build.version.sdk | tr -d '\r') == 35 ]]; then
+            mkdir -p "$diagnostics/previews"
+            for format in docx xlsx pptx odt ods odp md csv html; do
+                if adb shell run-as "$package" ls "cache/preview-$format.png" >/dev/null 2>&1; then
+                    adb exec-out run-as "$package" cat "cache/preview-$format.png" > "$diagnostics/previews/$format.png" || true
+                fi
+            done
+        fi
     fi
 }
 trap collect_failure EXIT

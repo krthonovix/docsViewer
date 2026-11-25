@@ -11,16 +11,20 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class AndroidSmoke extends Instrumentation {
     @Override public void onCreate(Bundle arguments) {
@@ -50,15 +54,15 @@ public final class AndroidSmoke extends Instrumentation {
             Activity workbook = open("sample.xlsx");
             await(workbook, "Budget", false);
             awaitWeb(workbook);
-            awaitContent("Budget grid");
+            awaitContent(workbook, "Budget grid");
             screenshot("xlsx");
             await(workbook, "Next sheet", true);
             await(workbook, "Totals", false);
             awaitWeb(workbook);
             close(workbook);
-            preview("ods", null, "class=\"grid\"", "scope=\"col\">C", "ODS cell");
-            preview("pptx", null, "<svg viewBox", "<foreignObject x=", "PowerPoint slide", "font-weight:bold;");
-            preview("odp", null, "<svg viewBox", "<foreignObject x=", "ODP slide");
+            preview("ods", "ODS cell", "class=\"grid\"", "scope=\"col\">C", "ODS cell");
+            preview("pptx", "PowerPoint slide", "<svg viewBox", "<foreignObject x=", "PowerPoint slide", "font-weight:bold;");
+            preview("odp", "ODP slide", "<svg viewBox", "<foreignObject x=", "ODP slide");
             preview("md", "Markdown heading", "<h1>Markdown heading", "<strong>Bold", "<del>deleted",
                     "type=\"checkbox\"", "<table");
             preview("markdown", null, "<blockquote>");
@@ -100,7 +104,15 @@ public final class AndroidSmoke extends Instrumentation {
         Activity activity = open("sample." + extension);
         awaitWeb(activity);
         if (extension.matches("docx|odt|ods|pptx|odp|md|csv|html")) screenshot(extension);
-        if (content != null) awaitContent(content);
+        if (content != null) awaitContent(activity, content);
+        if (extension.equals("docx")) {
+            assertDom(activity, "Array.from(document.images).some(image => image.naturalWidth === 160)",
+                    "The embedded Word image did not render");
+        }
+        if (extension.equals("pptx") || extension.equals("odp")) {
+            assertDom(activity, "document.querySelector('foreignObject').getBoundingClientRect().width > 0",
+                    "The slide shape did not have a layout");
+        }
         close(activity);
     }
 
@@ -144,25 +156,37 @@ public final class AndroidSmoke extends Instrumentation {
         throw new AssertionError("The formatted view did not render " + activity.getIntent().getData());
     }
 
-    private void awaitContent(String content) {
-        long deadline = SystemClock.uptimeMillis() + 8_000;
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (containsContent(getUiAutomation().getRootInActiveWindow(), content)) return;
-            SystemClock.sleep(150);
-        }
-        throw new AssertionError("Android did not expose the rendered content: " + content);
+    private void awaitContent(Activity activity, String content) throws InterruptedException {
+        assertDom(activity, "document.body.textContent.includes(" + JSONObject.quote(content) + ")",
+                "The rendered preview is missing " + content);
     }
 
-    private static boolean containsContent(AccessibilityNodeInfo node, String content) {
-        if (node == null) return false;
-        CharSequence text = node.getText();
-        CharSequence description = node.getContentDescription();
-        if (node.isVisibleToUser() && ((text != null && text.toString().contains(content))
-                || (description != null && description.toString().contains(content)))) return true;
-        for (int index = 0; index < node.getChildCount(); index++) {
-            if (containsContent(node.getChild(index), content)) return true;
+    private void assertDom(Activity activity, String expression, String message) throws InterruptedException {
+        AtomicReference<WebView> view = new AtomicReference<>();
+        runOnMainSync(() -> view.set(findWebView(activity.getWindow().getDecorView())));
+        WebView web = view.get();
+        AtomicBoolean wasDisabled = new AtomicBoolean();
+        runOnMainSync(() -> {
+            wasDisabled.set(!web.getSettings().getJavaScriptEnabled());
+            // Only the instrumentation enables this to inspect the trusted fixture's DOM.
+            web.getSettings().setJavaScriptEnabled(true);
+        });
+        try {
+            if (!wasDisabled.get()) throw new AssertionError("The app enabled JavaScript in a preview");
+            for (int attempt = 0; attempt < 10; attempt++) {
+                AtomicReference<String> result = new AtomicReference<>();
+                CountDownLatch evaluated = new CountDownLatch(1);
+                runOnMainSync(() -> web.evaluateJavascript(expression, value -> {
+                    result.set(value);
+                    evaluated.countDown();
+                }));
+                if (evaluated.await(2, TimeUnit.SECONDS) && "true".equals(result.get())) return;
+                SystemClock.sleep(150);
+            }
+            throw new AssertionError(message);
+        } finally {
+            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(false));
         }
-        return false;
     }
 
     private static WebView findWebView(View view) {
