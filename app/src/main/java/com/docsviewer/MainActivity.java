@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -22,7 +21,6 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -77,9 +75,8 @@ public final class MainActivity extends Activity {
         root.addView(toolbar, new LinearLayout.LayoutParams(MATCH, WRAP));
         body = new FrameLayout(this);
         root.addView(body, new LinearLayout.LayoutParams(MATCH, 0, 1));
-        applySystemInsets();
         setContentView(root);
-        root.requestApplyInsets();
+        applySystemInsets();
 
         if (state == null) {
             showHome();
@@ -117,19 +114,13 @@ public final class MainActivity extends Activity {
 
     @SuppressWarnings("deprecation")
     private void applySystemInsets() {
-        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                == Configuration.UI_MODE_NIGHT_YES;
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = getWindow().getInsetsController();
-            int bars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            if (controller != null) controller.setSystemBarsAppearance(dark ? 0 : bars, bars);
         } else {
-            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
-            if (!dark) flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-            getWindow().getDecorView().setSystemUiVisibility(flags);
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(decor.getSystemUiVisibility()
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         }
         getWindow().setStatusBarColor(Color.TRANSPARENT);
         getWindow().setNavigationBarColor(Color.TRANSPARENT);
@@ -159,6 +150,7 @@ public final class MainActivity extends Activity {
             toolbar.setPadding(dp(14), top + dp(7), dp(14), dp(7));
             return insets;
         });
+        root.requestApplyInsets();
     }
 
     private void showHome() {
