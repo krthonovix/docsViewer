@@ -61,7 +61,8 @@ public final class AndroidSmoke extends Instrumentation {
             awaitWeb(workbook);
             close(workbook);
             preview("ods", "ODS cell", "class=\"grid\"", "scope=\"col\">C", "ODS cell");
-            preview("pptx", "PowerPoint slide", "<svg viewBox", "<foreignObject x=", "PowerPoint slide", "font-weight:bold;");
+            preview("pptx", "PowerPoint slide", "<svg viewBox", "<foreignObject x=", "PowerPoint slide",
+                    "font-weight:bold;", "background-color:#17654F;", "border-radius:50%;");
             preview("odp", "ODP slide", "<svg viewBox", "<foreignObject x=", "ODP slide");
             preview("md", "Markdown heading", "<h1>Markdown heading", "<strong>Bold", "<del>deleted",
                     "type=\"checkbox\"", "<table");

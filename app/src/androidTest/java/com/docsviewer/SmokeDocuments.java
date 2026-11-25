@@ -57,7 +57,10 @@ final class SmokeDocuments {
                                 + "<p:cSld><p:spTree><p:sp><p:spPr><a:xfrm><a:off x=\"952500\" y=\"760000\"/>"
                                 + "<a:ext cx=\"10500000\" cy=\"1800000\"/></a:xfrm></p:spPr>"
                                 + "<p:txBody><a:p><a:r><a:rPr sz=\"4200\" b=\"1\"/><a:t>PowerPoint slide</a:t></a:r></a:p>"
-                                + "</p:txBody></p:sp></p:spTree></p:cSld></p:sld>");
+                                + "</p:txBody></p:sp><p:sp><p:spPr><a:xfrm><a:off x=\"1000000\" y=\"3500000\"/>"
+                                + "<a:ext cx=\"2000000\" cy=\"900000\"/></a:xfrm><a:prstGeom prst=\"ellipse\"/></p:spPr>"
+                                + "<p:style><a:fillRef idx=\"1\"><a:srgbClr val=\"17654F\"/></a:fillRef></p:style>"
+                                + "</p:sp></p:spTree></p:cSld></p:sld>");
                 break;
             case "sample.odt":
                 archive(output, "content.xml", odf("<office:text><text:h text:outline-level=\"2\">ODT heading</text:h>"

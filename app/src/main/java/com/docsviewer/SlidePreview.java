@@ -116,7 +116,9 @@ final class SlidePreview {
                 PartNode table = shape.first("tbl");
                 if (table != PartNode.EMPTY) canvas.box(geometry, "padding:0;", table(table, theme, canvas.scale));
             } else {
-                String css = shapeCss(properties, theme);
+                PartNode style = shape.child("style");
+                String css = shapeCss(properties, style, theme);
+                css += Markup.cssColor("color", theme.color(style.child("fontRef")));
                 PartNode body = shape.child("txBody");
                 String anchor = body.child("bodyPr").attr("anchor");
                 if (anchor.equals("ctr")) css += "justify-content:center;";
@@ -153,9 +155,10 @@ final class SlidePreview {
                 Markup.number(transform.attr("rot"), 0) / 60_000);
     }
 
-    private static String shapeCss(PartNode properties, Theme theme) {
-        String css = Markup.cssColor("background-color", theme.fill(properties));
-        String line = theme.fill(properties.child("ln"));
+    private static String shapeCss(PartNode properties, PartNode style, Theme theme) {
+        String fill = themedColor(properties, style.child("fillRef"), theme);
+        String css = Markup.cssColor("background-color", fill);
+        String line = themedColor(properties.child("ln"), style.child("lnRef"), theme);
         if (!line.isEmpty()) css += "border:1px solid " + line + ";";
         switch (properties.child("prstGeom").attr("prst")) {
             case "ellipse": css += "border-radius:50%;"; break;
@@ -165,6 +168,13 @@ final class SlidePreview {
             default: break;
         }
         return css;
+    }
+
+    private static String themedColor(PartNode properties, PartNode reference, Theme theme) {
+        if (properties.child("noFill") != PartNode.EMPTY) return "";
+        String direct = theme.fill(properties);
+        return direct.isEmpty() && Markup.integer(reference.attr("idx"), 0) > 0
+                ? theme.color(reference) : direct;
     }
 
     private static String text(PartNode body, PartNode inherited, Theme theme, double scale) {
