@@ -1,0 +1,11 @@
+<resources>
+    <color name="background">#101C19</color>
+    <color name="surface">#182823</color>
+    <color name="ink">#E5F2EC</color>
+    <color name="muted">#ADC4B9</color>
+    <color name="border">#334A40</color>
+    <color name="tint">#254438</color>
+    <color name="accent">#9CE2C7</color>
+    <color name="on_accent">#11382C</color>
+    <color name="ripple">#4477C5A9</color>
+</resources>

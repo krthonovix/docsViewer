@@ -1,13 +1,13 @@
 # Docs Viewer
 
-An Android 8.0+ offline document viewer prototype. Use **Open** to choose a local file or open a supported file from another app.
+An offline document viewer for Android 8.0+. Use **Browse files** or open a supported file from another app. The reader follows the system light or dark theme. Files picked through Android's file browser can appear in the recent list and reopen at the last page or text section.
 
-- PDF: Android PdfRenderer, one page rendered at a time, with previous/next controls.
+- PDF: Android PdfRenderer draws one page at a time. Tap the page count to jump to a page, or use **2×** and **Fit** to switch between views.
 - DOCX, XLSX, PPTX and ODT/ODS/ODP: extracts text into a selectable reading view. Layout, images, formulas, rich formatting and sheet coordinates are not faithfully rendered. Spreadsheet and presentation order follows internal file numbers, which may differ from the order displayed by Office. Password-protected files are not supported.
-- TXT, Markdown, CSV and common source/text files: plain text. Markdown is not rendered as rich text.
+- TXT, Markdown and common source files open as selectable, wrapped text. CSV, TSV and spreadsheet previews can scroll sideways. Long text is split into sections to keep scrolling responsive.
 - Legacy DOC/XLS/PPT, EPUB and other formats are not supported. This is not a universal document renderer.
 
-No network permission is requested. PDFs are copied to the app cache to support non-seekable document providers; the temporary copy is removed when another document opens or the activity closes. Text extraction has a 16 MB uncompressed content limit. PDF rendering is paginated, with no zoom or continuous scrolling yet. Speed has not been benchmarked against the PDF viewer.
+The viewer has no runtime dependencies or network permission. It opens seekable PDFs directly and makes a temporary cache copy only for providers that stream the file. Text extraction has a 16 MB input limit for text or the Office XML parts being read, and a two-million character limit for extracted Office text.
 
 ## Build
 

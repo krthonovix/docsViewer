@@ -1,91 +1,769 @@
 package com.docsviewer;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.graphics.pdf.PdfRenderer;
+import android.graphics.Insets;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
+import android.text.InputType;
+import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.*;
-import org.xmlpull.v1.XmlPullParser;
-import android.util.Xml;
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.zip.*;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
+import android.widget.TextView;
 
-public class MainActivity extends Activity {
-    private static final int PICK = 42, LIMIT = 16 * 1024 * 1024;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+public final class MainActivity extends Activity {
+    private static final int PICK_DOCUMENT = 42;
+    private static final int MATCH = LinearLayout.LayoutParams.MATCH_PARENT;
+    private static final int WRAP = LinearLayout.LayoutParams.WRAP_CONTENT;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private LinearLayout root, bar; private TextView title, status; private FrameLayout content;
-    private PdfRenderer pdf; private ParcelFileDescriptor descriptor; private File temp; private Bitmap bitmap;
-    private int page = 0, generation = 0; private String name = "";
+
+    private LinearLayout root;
+    private LinearLayout toolbar;
+    private FrameLayout body;
+    private RecentFiles recent;
+    private Uri documentUri;
+    private Uri pendingGrant;
+    private String documentName = "";
+    private String kind = "";
+    private int position;
+    private int pageCount;
+    private boolean busy;
+    private boolean zoomed;
+    private List<String> sections;
+    private Bitmap page;
+    private FrameLayout pdfViewport;
+
+    // The PDF session is confined to the worker. The request ID invalidates stale results.
+    private PdfDocument pdf;
+    private volatile int requestId;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setBackgroundColor(0xfff5f6f8);
-        bar = new LinearLayout(this); bar.setGravity(Gravity.CENTER_VERTICAL); bar.setPadding(12, 8, 12, 8); bar.setBackgroundColor(0xff17233a);
-        title = new TextView(this); title.setTextColor(Color.WHITE); title.setTextSize(18); title.setSingleLine(true);
-        bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        Button open = new Button(this); open.setText("Open"); open.setOnClickListener(v -> pick()); bar.addView(open); root.addView(bar);
-        content = new FrameLayout(this); root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
-        status = new TextView(this); status.setGravity(Gravity.CENTER); status.setPadding(12, 8, 12, 12); root.addView(status);
-        setContentView(root); home();
-        if (Intent.ACTION_VIEW.equals(getIntent().getAction()) && getIntent().getData() != null) open(getIntent().getData());
-    }
-    @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); if (i.getData() != null) open(i.getData()); }
-    private void home() { title.setText("Docs Viewer"); status.setText("Private, on-device reading"); TextView t = new TextView(this); t.setGravity(Gravity.CENTER); t.setTextSize(19); t.setPadding(32,32,32,32); t.setText("Your documents, in one place\n\nTap Open to choose a file\n\nPDF · DOCX · XLSX · PPTX · ODT · ODS · ODP · text · Markdown · CSV"); content.removeAllViews(); content.addView(t); }
-    private void pick() { Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); startActivityForResult(i, PICK); }
-    @Override protected void onActivityResult(int request, int result, Intent data) { super.onActivityResult(request,result,data); if (request == PICK && result == RESULT_OK && data != null && data.getData() != null) open(data.getData()); }
-    private String filename(Uri uri) { try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null,null,null)) { if (c != null && c.moveToFirst()) return c.getString(0); } catch (Exception ignored) {} return uri.getLastPathSegment() == null ? "Document" : uri.getLastPathSegment(); }
-    private void open(Uri uri) {
-        int id = ++generation; name = filename(uri); title.setText(name); status.setText("Opening…"); content.removeAllViews();
-        worker.execute(() -> { closePdf(); try {
-            String lower = name.toLowerCase(Locale.ROOT); String mime = getContentResolver().getType(uri);
-            if (lower.endsWith(".pdf") || "application/pdf".equals(mime)) {
-                temp = File.createTempFile("document-", ".pdf", getCacheDir());
-                try (InputStream in = getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(temp)) { if (in == null) throw new IOException("Cannot open file"); byte[] b = new byte[32768]; int n; while ((n=in.read(b)) != -1) out.write(b,0,n); }
-                descriptor = ParcelFileDescriptor.open(temp, ParcelFileDescriptor.MODE_READ_ONLY); pdf = new PdfRenderer(descriptor); page = 0; render(id);
-            } else {
-                String text; try (InputStream in = getContentResolver().openInputStream(uri)) { if (in == null) throw new IOException("Cannot open file");
-                    if (lower.matches(".*\\.(docx|xlsx|pptx|odt|ods|odp)$")) text = office(in, lower);
-                    else if (lower.matches(".*\\.(txt|md|markdown|csv|tsv|json|xml|html|htm|log|java|kt|js|css)$") || (mime != null && mime.startsWith("text/"))) text = new String(readLimited(in), StandardCharsets.UTF_8);
-                    else throw new IOException("Unsupported format. Try PDF, DOCX, XLSX, PPTX, OpenDocument or a text file."); }
-                final String result = text; runOnUiThread(() -> { if (id != generation) return; TextView view = new TextView(this); view.setTextIsSelectable(true); view.setTextColor(0xff202b3c); view.setTextSize(16); view.setPadding(24,24,24,24); view.setText(result.isEmpty() ? "No readable text found in this document." : result); HorizontalScrollView h = new HorizontalScrollView(this); ScrollView scroll = new ScrollView(this); scroll.addView(view); h.addView(scroll); content.removeAllViews(); content.addView(h); status.setText("Text view · formatting and images may differ"); });
-            }
-        } catch (Exception e) { error(id,e); } });
-    }
-    private void render(int id) {
-        try { if (pdf == null || pdf.getPageCount() == 0) throw new IOException("PDF has no pages");
-            int current = page, count = pdf.getPageCount(); Bitmap image;
-            try (PdfRenderer.Page p = pdf.openPage(current)) { int width = Math.min(1600, Math.max(600, getResources().getDisplayMetrics().widthPixels)); int height = Math.max(1, Math.min(3000, (int)((long)width * p.getHeight() / p.getWidth()))); image = Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888); image.eraseColor(Color.WHITE); p.render(image,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY); }
-            runOnUiThread(() -> { if (id != generation) { image.recycle(); return; } content.removeAllViews(); if (bitmap != null) bitmap.recycle(); bitmap = image;
-                LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL); ImageView iv = new ImageView(this); iv.setImageBitmap(image); iv.setAdjustViewBounds(true); ScrollView scroll = new ScrollView(this); scroll.addView(iv); layout.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-                LinearLayout nav = new LinearLayout(this); nav.setGravity(Gravity.CENTER); Button prev = new Button(this); prev.setText("Previous"); prev.setEnabled(current > 0); Button next = new Button(this); next.setText("Next"); next.setEnabled(current + 1 < count); TextView label = new TextView(this); label.setPadding(24,0,24,0); label.setText((current+1)+" / "+count); prev.setOnClickListener(v -> turn(-1)); next.setOnClickListener(v -> turn(1)); nav.addView(prev); nav.addView(label); nav.addView(next); layout.addView(nav); content.addView(layout); status.setText("PDF · page " + (current+1) + " of " + count); });
-        } catch (Exception e) { error(id,e); }
-    }
-    private void turn(int delta) { int id = generation; status.setText("Rendering…"); worker.execute(() -> { if (id != generation || pdf == null) return; page = Math.max(0,Math.min(pdf.getPageCount()-1,page+delta)); render(id); }); }
-    private void error(int id, Exception e) { runOnUiThread(() -> { if (id != generation) return; status.setText("Could not open document"); TextView t = new TextView(this); t.setPadding(32,32,32,32); t.setText("Unable to read this file.\n\n" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage())); content.removeAllViews(); content.addView(t); }); }
-    private void closePdf() { try { if (pdf != null) pdf.close(); else if (descriptor != null) descriptor.close(); } catch (Exception ignored) {} pdf = null; descriptor = null; if (temp != null) temp.delete(); temp = null; }
-    @Override protected void onDestroy() { ++generation; worker.execute(this::closePdf); worker.shutdown(); super.onDestroy(); }
-    private static byte[] readLimited(InputStream in) throws IOException { ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] b = new byte[8192]; int n, total=0; while ((n=in.read(b)) != -1) { total+=n; if (total > LIMIT) throw new IOException("Document content exceeds the 16 MB reading limit."); out.write(b,0,n); } return out.toByteArray(); }
-    private static String office(InputStream input, String name) throws Exception {
-        Map<String,byte[]> entries = new TreeMap<>(MainActivity::naturalCompare); int total = 0;
-        try (ZipInputStream zip = new ZipInputStream(input)) { ZipEntry e; while ((e=zip.getNextEntry()) != null) { String p=e.getName(); boolean wanted = p.equals("word/document.xml") || p.equals("content.xml") || p.equals("xl/sharedStrings.xml") || p.matches("xl/worksheets/sheet[0-9]+\\.xml") || p.matches("ppt/slides/slide[0-9]+\\.xml"); if (wanted) { byte[] data=readLimited(zip); total+=data.length; if (total>LIMIT) throw new IOException("Document content exceeds the 16 MB reading limit."); entries.put(p,data); } } }
-        ArrayList<String> shared = new ArrayList<>(); if (entries.containsKey("xl/sharedStrings.xml")) shared = sharedStrings(entries.remove("xl/sharedStrings.xml"));
-        StringBuilder out = new StringBuilder(); for (Map.Entry<String,byte[]> e : entries.entrySet()) { if (e.getKey().startsWith("ppt/")) out.append("Slide ").append(e.getKey().replaceAll(".*slide([0-9]+)\\.xml", "$1")).append("\n\n"); if (e.getKey().startsWith("xl/")) out.append("Sheet ").append(e.getKey().replaceAll(".*sheet([0-9]+)\\.xml", "$1")).append("\n\n"); extract(e.getValue(),out,shared,e.getKey()); out.append("\n\n"); }
-        if (entries.isEmpty()) throw new IOException("No supported document content found. The file may be encrypted or damaged."); return out.toString().trim();
-    }
-    private static XmlPullParser parser(byte[] xml) throws Exception { XmlPullParser p=Xml.newPullParser(); p.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES,true); p.setInput(new ByteArrayInputStream(xml),"UTF-8"); return p; }
-    private static ArrayList<String> sharedStrings(byte[] xml) throws Exception { ArrayList<String> list=new ArrayList<>(); XmlPullParser p=parser(xml); StringBuilder s=null; for(int event=p.getEventType();event!=XmlPullParser.END_DOCUMENT;event=p.next()) { if(event==XmlPullParser.START_TAG && p.getName().equals("si")) s=new StringBuilder(); else if(event==XmlPullParser.START_TAG && p.getName().equals("t") && s!=null) s.append(p.nextText()); else if(event==XmlPullParser.END_TAG && p.getName().equals("si") && s!=null) { list.add(s.toString()); s=null; } } return list; }
-    private static void extract(byte[] xml,StringBuilder out,ArrayList<String> shared,String path) throws Exception { XmlPullParser p=parser(xml); boolean sheet=path.startsWith("xl/"), sharedCell=false; for(int event=p.getEventType();event!=XmlPullParser.END_DOCUMENT;event=p.next()) { String tag=p.getName(); if(event==XmlPullParser.START_TAG) { if(sheet && tag.equals("c")) sharedCell="s".equals(p.getAttributeValue(null,"t")); else if(sheet && tag.equals("v")) { String value=p.nextText(); if(sharedCell) try { value=shared.get(Integer.parseInt(value)); } catch(Exception ignored) {} out.append(value).append('\t'); } else if(tag.equals("t")) out.append(p.nextText()); else if(tag.equals("tab")) out.append('\t'); else if(tag.equals("br") || tag.equals("line-break")) out.append('\n'); } else if(event==XmlPullParser.TEXT && path.equals("content.xml")) out.append(p.getText()); else if(event==XmlPullParser.END_TAG && (tag.equals("p") || tag.equals("row") || tag.equals("table-row"))) out.append('\n'); else if(event==XmlPullParser.END_TAG && tag.equals("table-cell")) out.append('\t'); } }
-    private static int naturalCompare(String a,String b) { String aa = a.replaceAll("([0-9]+)(?=\\.xml$)", "0000000000$1"); String bb = b.replaceAll("([0-9]+)(?=\\.xml$)", "0000000000$1"); int ai=aa.lastIndexOf("0000000000"), bi=bb.lastIndexOf("0000000000"); if (ai >= 0 && bi >= 0) { String ap=aa.substring(0,ai), bp=bb.substring(0,bi); int c=ap.compareTo(bp); if(c != 0) return c; String an=aa.substring(ai+10,aa.length()-4), bn=bb.substring(bi+10,bb.length()-4); c=Integer.compare(an.length(),bn.length()); if(c != 0) return c; return an.compareTo(bn); } return a.compareTo(b); }
-}
+        recent = new RecentFiles(getSharedPreferences("recent", MODE_PRIVATE), getContentResolver());
+        root = column();
+        root.setBackgroundColor(color(R.color.background));
+        toolbar = row();
+        toolbar.setBackgroundColor(color(R.color.surface));
+        root.addView(toolbar, new LinearLayout.LayoutParams(MATCH, WRAP));
+        body = new FrameLayout(this);
+        root.addView(body, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        applySystemInsets();
+        setContentView(root);
+        root.requestApplyInsets();
 
+        if (state == null) {
+            showHome();
+            openIntent(getIntent());
+        } else {
+            String uri = state.getString("uri");
+            String pending = state.getString("pendingGrant");
+            if (pending != null) pendingGrant = Uri.parse(pending);
+            if (uri == null) showHome();
+            else open(Uri.parse(uri), state.getInt("position"));
+        }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        if (documentUri != null) {
+            state.putString("uri", documentUri.toString());
+            state.putInt("position", position);
+        }
+        if (pendingGrant != null) state.putString("pendingGrant", pendingGrant.toString());
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        openIntent(intent);
+    }
+
+    private void openIntent(Intent intent) {
+        if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
+            Uri uri = intent.getData();
+            open(uri, recent.position(uri));
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applySystemInsets() {
+        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            int bars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            if (controller != null) controller.setSystemBarsAppearance(dark ? 0 : bars, bars);
+        } else {
+            int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            if (!dark) flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        }
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int left;
+            int top;
+            int right;
+            int bottom;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
+                        | WindowInsets.Type.displayCutout());
+                left = safe.left;
+                top = safe.top;
+                right = safe.right;
+                bottom = safe.bottom;
+            } else {
+                left = insets.getSystemWindowInsetLeft();
+                top = insets.getSystemWindowInsetTop();
+                right = insets.getSystemWindowInsetRight();
+                bottom = insets.getSystemWindowInsetBottom();
+                if (Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout() != null) {
+                    left = Math.max(left, insets.getDisplayCutout().getSafeInsetLeft());
+                    right = Math.max(right, insets.getDisplayCutout().getSafeInsetRight());
+                }
+            }
+            root.setPadding(left, 0, right, bottom);
+            toolbar.setPadding(dp(14), top + dp(7), dp(14), dp(7));
+            return insets;
+        });
+    }
+
+    private void showHome() {
+        toolbar.removeAllViews();
+        toolbar.addView(mark(), new LinearLayout.LayoutParams(dp(38), dp(38)));
+        TextView brand = label("Docs Viewer", 20, R.color.ink, true);
+        LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(0, WRAP, 1);
+        brandParams.setMarginStart(dp(12));
+        toolbar.addView(brand, brandParams);
+
+        LinearLayout content = column();
+        int side = readingMargin(620, 20);
+        content.setPadding(side, dp(24), side, dp(24));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(content, new ScrollView.LayoutParams(MATCH, WRAP));
+        setBody(scroll);
+
+        LinearLayout hero = column();
+        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xff142f28, 0xff1b5948});
+        backdrop.setCornerRadius(dp(24));
+        hero.setBackground(backdrop);
+        hero.setPadding(dp(22), dp(23), dp(22), dp(22));
+        content.addView(hero, new LinearLayout.LayoutParams(MATCH, WRAP));
+        TextView headline = label("Open a document", 29, R.color.ink, true);
+        headline.setTextColor(Color.WHITE);
+        heading(headline);
+        hero.addView(headline);
+        TextView formats = label("PDF, Word, Excel, PowerPoint, OpenDocument and text files.", 15,
+                R.color.muted, false);
+        formats.setTextColor(0xffd3e9df);
+        addWithTopMargin(hero, formats, 8);
+        Button browse = button("Browse files", true, v -> pick());
+        browse.setTextColor(0xff183d31);
+        browse.setBackground(ripple(0xffbcebd6, 15, false));
+        addWithTopMargin(hero, browse, 20);
+
+        TextView recentTitle = label("Recent files", 19, R.color.ink, true);
+        heading(recentTitle);
+        addWithTopMargin(content, recentTitle, 25);
+        List<RecentFiles.Entry> entries = recent.entries();
+        if (entries.isEmpty()) {
+            TextView empty = label("Files you open will appear here.", 15, R.color.muted, false);
+            empty.setBackground(shape(color(R.color.surface), 16, true));
+            empty.setPadding(dp(16), dp(15), dp(16), dp(15));
+            addWithTopMargin(content, empty, 9);
+        } else {
+            for (RecentFiles.Entry entry : entries) addWithTopMargin(content, recentRow(entry), 8);
+        }
+    }
+
+    private View recentRow(RecentFiles.Entry entry) {
+        LinearLayout item = row();
+        item.setPadding(dp(11), dp(10), dp(13), dp(10));
+        item.setBackground(ripple(color(R.color.surface), 16, true));
+        String type = typeLabel(entry.kind);
+        TextView badge = label(type, 11, R.color.accent, true);
+        badge.setGravity(Gravity.CENTER);
+        badge.setBackground(shape(color(R.color.tint), 11, false));
+        item.addView(badge, new LinearLayout.LayoutParams(dp(55), dp(40)));
+
+        LinearLayout details = column();
+        TextView name = label(entry.name, 16, R.color.ink, true);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        details.addView(name);
+        String detail = entry.kind.equals("pdf") ? "Page " + (entry.position + 1) : formatName(entry.kind);
+        details.addView(label(detail, 13, R.color.muted, false));
+        LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(0, WRAP, 1);
+        detailsParams.setMarginStart(dp(11));
+        item.addView(details, detailsParams);
+        TextView chevron = label("\u203a", 24, R.color.accent, false);
+        chevron.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        item.addView(chevron);
+        item.setContentDescription(entry.name + ", " + type + ", " + detail);
+        item.setOnClickListener(v -> open(entry.uri, entry.position));
+        item.setFocusable(true);
+        item.setOnLongClickListener(v -> {
+            new AlertDialog.Builder(this).setTitle("Remove from recent files?")
+                    .setMessage(entry.name).setNegativeButton("Cancel", null)
+                    .setPositiveButton("Remove", (dialog, which) -> {
+                        recent.forget(entry.uri);
+                        showHome();
+                    }).show();
+            return true;
+        });
+        return item;
+    }
+
+    private void readerToolbar(String subtitle) {
+        toolbar.removeAllViews();
+        Button back = button("\u2190", false, v -> returnHome());
+        back.setTextSize(23);
+        back.setContentDescription("Back to files");
+        toolbar.addView(back, new LinearLayout.LayoutParams(dp(48), WRAP));
+        LinearLayout info = column();
+        TextView title = label(documentName, 17, R.color.ink, true);
+        title.setSingleLine();
+        title.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+        heading(title);
+        info.addView(title);
+        info.addView(label(subtitle, 12, R.color.muted, false));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, WRAP, 1);
+        params.setMarginStart(dp(10));
+        params.setMarginEnd(dp(8));
+        toolbar.addView(info, params);
+        toolbar.addView(button("Open", false, v -> pick()), new LinearLayout.LayoutParams(WRAP, WRAP));
+    }
+
+    private void pick() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, PICK_DOCUMENT);
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != PICK_DOCUMENT || result != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        if (!uri.equals(pendingGrant)) {
+            discardPendingGrant();
+            if (recent.keepPermission(uri)) pendingGrant = uri;
+        }
+        open(uri, recent.position(uri));
+    }
+
+
+    private void open(Uri uri, int initialPosition) {
+        if (!uri.equals(pendingGrant)) discardPendingGrant();
+        int token = ++requestId;
+        documentUri = uri;
+        documentName = "Document";
+        position = initialPosition;
+        busy = true;
+        zoomed = false;
+        sections = null;
+        page = null;
+        pdfViewport = null;
+        readerToolbar("Opening file");
+        showLoading();
+
+        int width = renderWidth();
+        worker.execute(() -> {
+            closePdf();
+            if (token != requestId) return;
+            String name = fileName(uri);
+            try {
+                String mime = getContentResolver().getType(uri);
+                String format = DocumentText.detectFormat(name, mime);
+                if (format.equals("pdf")) {
+                    pdf = PdfDocument.open(getContentResolver(), uri, getCacheDir(), () -> token != requestId);
+                    if (token != requestId) {
+                        closePdf();
+                        return;
+                    }
+                    int count = pdf.pageCount();
+                    if (count == 0) throw new IOException("This PDF has no pages.");
+                    int index = Math.min(Math.max(0, initialPosition), count - 1);
+                    finishPdf(token, name, index, count, pdf.render(index, width, 2304));
+                } else {
+                    if (!DocumentText.isOffice(format) && !DocumentText.isPlain(format, mime)) {
+                        throw new IOException("This format could not be opened. Try PDF, DOCX, XLSX, "
+                                + "PPTX, OpenDocument, or a text file.");
+                    }
+                    List<String> loaded;
+                    try (InputStream input = getContentResolver().openInputStream(uri)) {
+                        if (input == null) throw new IOException("The file could not be opened.");
+                        loaded = DocumentText.read(input, format);
+                    }
+                    runOnUiThread(() -> {
+                        if (token != requestId) return;
+                        documentName = name;
+                        kind = format;
+                        sections = loaded;
+                        position = Math.min(Math.max(0, initialPosition), sections.size() - 1);
+                        busy = false;
+                        rememberPosition();
+                        showText();
+                    });
+                }
+            } catch (Exception e) {
+                closePdf();
+                showError(token, name, e);
+            }
+        });
+    }
+
+    private void finishPdf(int token, String name, int index, int count, Bitmap bitmap) {
+        runOnUiThread(() -> {
+            if (token != requestId) {
+                bitmap.recycle();
+                return;
+            }
+            documentName = name;
+            kind = "pdf";
+            position = index;
+            pageCount = count;
+            page = bitmap;
+            busy = false;
+            rememberPosition();
+            showPdf();
+        });
+    }
+
+    private void rememberPosition() {
+        recent.remember(documentUri, documentName, kind, position);
+        if (documentUri.equals(pendingGrant)) pendingGrant = null;
+    }
+
+    private void showPdf() {
+        readerToolbar("PDF document");
+        LinearLayout screen = column();
+        FrameLayout viewport = new FrameLayout(this);
+        pdfViewport = viewport;
+        screen.addView(viewport, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        screen.addView(navigation("Page", pageCount, true));
+        viewport.addOnLayoutChangeListener((v, l, t, r, b, oldL, oldT, oldR, oldB) -> {
+            if (r - l != oldR - oldL || b - t != oldB - oldT) {
+                viewport.post(() -> {
+                    if (viewport == pdfViewport) displayPdfPage(viewport);
+                });
+            }
+        });
+        setBody(screen);
+    }
+
+    private void displayPdfPage(FrameLayout viewport) {
+        int width = viewport.getWidth() - dp(24);
+        int height = viewport.getHeight() - dp(24);
+        if (width <= 0 || height <= 0 || page == null) return;
+        viewport.removeAllViews();
+        double fit = Math.min((double) width / page.getWidth(), (double) height / page.getHeight());
+        double scale = zoomed ? fit * 2 : fit;
+        int pageWidth = Math.max(1, (int) Math.round(page.getWidth() * scale));
+        int pageHeight = Math.max(1, (int) Math.round(page.getHeight() * scale));
+        ImageView image = new ImageView(this);
+        image.setImageBitmap(page);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setBackgroundColor(Color.WHITE);
+        image.setContentDescription("PDF page " + (position + 1));
+        if (!zoomed) {
+            viewport.addView(image, new FrameLayout.LayoutParams(pageWidth, pageHeight, Gravity.CENTER));
+            return;
+        }
+        HorizontalScrollView horizontal = new HorizontalScrollView(this);
+        horizontal.setFillViewport(true);
+        ScrollView vertical = new ScrollView(this);
+        vertical.setFillViewport(true);
+        FrameLayout canvas = new FrameLayout(this);
+        canvas.setPadding(dp(12), dp(12), dp(12), dp(12));
+        canvas.addView(image, new FrameLayout.LayoutParams(pageWidth, pageHeight, Gravity.CENTER));
+        horizontal.addView(canvas, new FrameLayout.LayoutParams(WRAP, WRAP));
+        vertical.addView(horizontal, new FrameLayout.LayoutParams(MATCH, WRAP));
+        viewport.addView(vertical, new FrameLayout.LayoutParams(MATCH, MATCH));
+        horizontal.post(() -> horizontal.scrollTo(Math.max(0, (pageWidth - width) / 2), 0));
+    }
+
+    private void showText() {
+        boolean table = DocumentText.isTable(kind);
+        readerToolbar(DocumentText.isOffice(kind) ? "Text preview" : formatName(kind));
+        LinearLayout screen = column();
+        ScrollView vertical = new ScrollView(this);
+        vertical.setFillViewport(true);
+        vertical.setBackgroundColor(color(R.color.surface));
+        TextView text = label(sections.get(position), table ? 14 : 17, R.color.ink, false);
+        text.setTextIsSelectable(true);
+        text.setLineSpacing(dp(4), 1);
+        int side = table ? dp(18) : readingMargin(680, 18);
+        text.setPadding(side, dp(20), side, dp(28));
+        if (table) {
+            text.setTypeface(Typeface.MONOSPACE);
+            text.setHorizontallyScrolling(true);
+            HorizontalScrollView horizontal = new HorizontalScrollView(this);
+            horizontal.setFillViewport(true);
+            horizontal.addView(text, new FrameLayout.LayoutParams(WRAP, WRAP));
+            vertical.addView(horizontal, new FrameLayout.LayoutParams(MATCH, WRAP));
+        } else {
+            vertical.addView(text, new FrameLayout.LayoutParams(MATCH, WRAP));
+        }
+        screen.addView(vertical, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        if (sections.size() > 1) screen.addView(navigation("Section", sections.size(), false));
+        setBody(screen);
+    }
+
+    private View navigation(String unit, int count, boolean pdfMode) {
+        LinearLayout footer = row();
+        footer.setBackgroundColor(color(R.color.surface));
+        footer.setPadding(dp(10), dp(7), dp(10), dp(7));
+        String unitName = unit.toLowerCase(Locale.ROOT);
+
+        Button previous = button("\u2039", false, v -> goTo(position - 1));
+        previous.setTextSize(26);
+        previous.setContentDescription("Previous " + unitName);
+        setAvailable(previous, position > 0);
+        footer.addView(previous, new LinearLayout.LayoutParams(dp(48), WRAP));
+
+        Button jump = button((position + 1) + " / " + count, false, v -> showJump(unitName, count));
+        jump.setContentDescription(unit + " " + (position + 1) + " of " + count
+                + (count > 1 ? ". Jump to " + unitName : ""));
+        setAvailable(jump, count > 1);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, WRAP, 1);
+        params.setMarginStart(dp(6));
+        params.setMarginEnd(dp(6));
+        footer.addView(jump, params);
+
+        Button next = button("\u203a", false, v -> goTo(position + 1));
+        next.setTextSize(26);
+        next.setContentDescription("Next " + unitName);
+        setAvailable(next, position + 1 < count);
+        footer.addView(next, new LinearLayout.LayoutParams(dp(48), WRAP));
+
+        if (pdfMode) {
+            Button zoom = button("", false, v -> {
+                zoomed = !zoomed;
+                updateZoomButton((Button) v);
+                if (pdfViewport != null) displayPdfPage(pdfViewport);
+            });
+            updateZoomButton(zoom);
+            LinearLayout.LayoutParams zoomParams = new LinearLayout.LayoutParams(dp(56), WRAP);
+            zoomParams.setMarginStart(dp(6));
+            footer.addView(zoom, zoomParams);
+        }
+        return footer;
+    }
+
+    private void updateZoomButton(Button button) {
+        button.setText(zoomed ? "Fit" : "2\u00d7");
+        button.setContentDescription(zoomed ? "Fit page to screen" : "Zoom in two times");
+    }
+
+    private void showJump(String unit, int count) {
+        if (busy) return;
+        EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
+        input.setHint("1 to " + count);
+        input.setContentDescription(unit + " number");
+        FrameLayout field = new FrameLayout(this);
+        field.setPadding(dp(24), dp(5), dp(24), 0);
+        field.addView(input);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Go to " + unit)
+                .setView(field).setNegativeButton("Cancel", null).setPositiveButton("Go", null).create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    int index;
+                    try {
+                        index = Integer.parseInt(input.getText().toString()) - 1;
+                    } catch (NumberFormatException e) {
+                        index = -1;
+                    }
+                    if (index < 0 || index >= count) {
+                        input.setError("Enter a number from 1 to " + count);
+                    } else {
+                        dialog.dismiss();
+                        goTo(index);
+                    }
+                }));
+        dialog.show();
+    }
+
+    private void goTo(int index) {
+        if (busy || index == position) return;
+        if (sections != null) {
+            if (index < 0 || index >= sections.size()) return;
+            position = index;
+            rememberPosition();
+            showText();
+        } else if (page != null && index >= 0 && index < pageCount) {
+            busy = true;
+            int token = requestId;
+            int count = pageCount;
+            int width = renderWidth();
+            String name = documentName;
+            worker.execute(() -> {
+                if (token != requestId || pdf == null) return;
+                try {
+                    finishPdf(token, name, index, count, pdf.render(index, width, 2304));
+                } catch (Exception e) {
+                    closePdf();
+                    showError(token, name, e);
+                }
+            });
+        }
+    }
+
+
+    private void showLoading() {
+        LinearLayout state = column();
+        state.setGravity(Gravity.CENTER);
+        state.setPadding(dp(24), dp(16), dp(24), dp(16));
+        ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminateTintList(ColorStateList.valueOf(color(R.color.accent)));
+        state.addView(spinner, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView note = label("Opening document\u2026", 16, R.color.muted, false);
+        note.setGravity(Gravity.CENTER);
+        note.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        addWithTopMargin(state, note, 13);
+        setBody(state);
+    }
+
+    private void showError(int token, String name, Exception error) {
+        Log.w("DocsViewer", "Document operation failed", error);
+        runOnUiThread(() -> {
+            if (token != requestId) return;
+            busy = false;
+            page = null;
+            pdfViewport = null;
+            documentName = name;
+            discardPendingGrant();
+            readerToolbar("Unable to open");
+            LinearLayout content = column();
+            int side = readingMargin(460, 20);
+            content.setPadding(side, dp(24), side, dp(24));
+            LinearLayout panel = column();
+            panel.setBackground(shape(color(R.color.surface), 20, true));
+            panel.setPadding(dp(20), dp(19), dp(20), dp(20));
+            content.addView(panel, new LinearLayout.LayoutParams(MATCH, WRAP));
+            TextView title = label("Couldn\u2019t open this file", 22, R.color.ink, true);
+            heading(title);
+            panel.addView(title);
+            addWithTopMargin(panel, label(errorMessage(error), 15, R.color.muted, false), 9);
+            addWithTopMargin(panel, button("Choose another file", true, v -> pick()), 16);
+            ScrollView scroll = new ScrollView(this);
+            scroll.addView(content, new ScrollView.LayoutParams(MATCH, WRAP));
+            setBody(scroll);
+        });
+    }
+
+    private String errorMessage(Exception error) {
+        if (error instanceof FileNotFoundException) {
+            return "The file may have moved or been deleted. Try opening it again from the file picker.";
+        }
+        if (error instanceof SecurityException) {
+            return "This file may be password protected or no longer accessible.";
+        }
+        if (error.getClass() == IOException.class && error.getMessage() != null) return error.getMessage();
+        return "Check that the file is complete and in a supported format.";
+    }
+
+    @Override public void onBackPressed() {
+        if (documentUri != null) returnHome();
+        else super.onBackPressed();
+    }
+
+    private void returnHome() {
+        requestId++;
+        discardPendingGrant();
+        documentUri = null;
+        sections = null;
+        page = null;
+        pdfViewport = null;
+        worker.execute(this::closePdf);
+        showHome();
+    }
+
+    private void discardPendingGrant() {
+        if (pendingGrant == null) return;
+        recent.release(pendingGrant);
+        pendingGrant = null;
+    }
+
+    private void closePdf() {
+        if (pdf == null) return;
+        try {
+            pdf.close();
+        } finally {
+            pdf = null;
+        }
+    }
+
+    @Override protected void onDestroy() {
+        requestId++;
+        if (isFinishing()) discardPendingGrant();
+        worker.execute(this::closePdf);
+        worker.shutdown();
+        super.onDestroy();
+    }
+
+    private String fileName(Uri uri) {
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME},
+                null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) return cursor.getString(0);
+        } catch (RuntimeException ignored) {
+            // Some document providers only implement opening the file.
+        }
+        return uri.getLastPathSegment() == null ? "Document" : uri.getLastPathSegment();
+    }
+
+    private String typeLabel(String format) {
+        if (format.equals("markdown") || format.equals("md")) return "MD";
+        if (format.isEmpty() || format.length() > 5) return "FILE";
+        return format.toUpperCase(Locale.ROOT);
+    }
+
+    private String formatName(String format) {
+        switch (format) {
+            case "md":
+            case "markdown": return "Markdown";
+            case "docx": return "Word document";
+            case "xlsx": return "Excel spreadsheet";
+            case "pptx": return "PowerPoint presentation";
+            case "odt": return "OpenDocument text";
+            case "ods": return "OpenDocument spreadsheet";
+            case "odp": return "OpenDocument presentation";
+            case "csv": return "CSV table";
+            case "tsv": return "TSV table";
+            default: return "Text document";
+        }
+    }
+
+    private void setBody(View view) {
+        body.removeAllViews();
+        body.addView(view, new FrameLayout.LayoutParams(MATCH, MATCH));
+    }
+
+    private ImageView mark() {
+        ImageView image = new ImageView(this);
+        image.setImageResource(R.drawable.ic_docs);
+        image.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        return image;
+    }
+
+    private int renderWidth() {
+        return Math.min(1600, Math.max(640, getResources().getDisplayMetrics().widthPixels * 3 / 2));
+    }
+
+    private int readingMargin(int width, int minimum) {
+        int screen = getResources().getConfiguration().screenWidthDp;
+        return dp(Math.max(minimum, (screen - width) / 2));
+    }
+
+    private int color(int resource) {
+        return getColor(resource);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private LinearLayout column() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        return layout;
+    }
+
+    private LinearLayout row() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setGravity(Gravity.CENTER_VERTICAL);
+        return layout;
+    }
+
+    private void addWithTopMargin(LinearLayout layout, View child, int margin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(MATCH, WRAP);
+        params.topMargin = dp(margin);
+        layout.addView(child, params);
+    }
+
+    private void heading(TextView text) {
+        if (Build.VERSION.SDK_INT >= 28) text.setAccessibilityHeading(true);
+    }
+
+    private TextView label(CharSequence value, int size, int colorResource, boolean emphasized) {
+        TextView label = new TextView(this);
+        label.setText(value);
+        label.setTextSize(size);
+        label.setTextColor(color(colorResource));
+        if (emphasized) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        return label;
+    }
+
+    private Button button(String caption, boolean primary, View.OnClickListener click) {
+        Button button = new Button(this);
+        button.setAllCaps(false);
+        button.setText(caption);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setTextColor(color(primary ? R.color.on_accent : R.color.accent));
+        button.setMinWidth(dp(48));
+        button.setMinimumWidth(dp(48));
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setStateListAnimator(null);
+        button.setBackground(ripple(color(primary ? R.color.accent : R.color.tint), 13, false));
+        button.setOnClickListener(click);
+        return button;
+    }
+
+    private void setAvailable(View control, boolean available) {
+        control.setEnabled(available);
+        control.setAlpha(available ? 1f : 0.46f);
+    }
+
+    private GradientDrawable shape(int fill, int radius, boolean border) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fill);
+        drawable.setCornerRadius(dp(radius));
+        if (border) drawable.setStroke(dp(1), color(R.color.border));
+        return drawable;
+    }
+
+    private RippleDrawable ripple(int fill, int radius, boolean border) {
+        return new RippleDrawable(ColorStateList.valueOf(color(R.color.ripple)),
+                shape(fill, radius, border), null);
+    }
+}
