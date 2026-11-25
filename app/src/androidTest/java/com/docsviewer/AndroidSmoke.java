@@ -9,8 +9,12 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.webkit.WebView;
 import android.widget.TextView;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AndroidSmoke extends Instrumentation {
@@ -32,13 +36,43 @@ public final class AndroidSmoke extends Instrumentation {
             await(pdf, "Browse files", false);
             close(pdf);
 
-            Activity text = open("sample.txt");
-            await(text, "Text reader sample", false);
-            close(text);
-
-            Activity word = open("sample.docx");
-            await(word, "Office preview sample", false);
-            close(word);
+            preview("docx", "Word heading", "<h1", "font-weight:bold;", "<table", "Word cell");
+            preview("odt", "ODT heading", "<h2", "<ul", "ODT item</p></li>");
+            Preview sheets = markup("xlsx", "class=\"grid\"", "colspan=\"3\"", "Budget grid");
+            if (!"Budget".equals(sheets.sections.get(0).title) || !"Totals".equals(sheets.sections.get(1).title)) {
+                throw new AssertionError("XLSX sheet names or order were lost");
+            }
+            Activity workbook = open("sample.xlsx");
+            await(workbook, "Budget", false);
+            awaitWeb(workbook);
+            awaitContent("Budget grid");
+            await(workbook, "Next sheet", true);
+            await(workbook, "Totals", false);
+            awaitWeb(workbook);
+            close(workbook);
+            preview("ods", "ODS cell", "class=\"grid\"", "scope=\"col\">C", "ODS cell");
+            preview("pptx", null, "<svg viewBox", "<foreignObject x=", "PowerPoint slide", "font-weight:bold;");
+            preview("odp", null, "<svg viewBox", "<foreignObject x=", "ODP slide");
+            preview("md", "Markdown heading", "<h1>Markdown heading", "<strong>Bold", "<del>deleted",
+                    "type=\"checkbox\"", "<table");
+            preview("markdown", null, "<blockquote>");
+            preview("csv", "Comma, kept", "class=\"grid\"", "Comma, kept\nnext line", "<td>10</td>");
+            preview("tsv", null, "<td>Item</td><td>20</td>");
+            Preview html = markup("html", "<h1>HTML heading", "<table>", "HTML cell");
+            if (html.sections.get(0).html.contains("<script") || html.sections.get(0).html.contains("onerror")
+                    || html.sections.get(0).html.contains("https://example.invalid")) {
+                throw new AssertionError("Active HTML was included in the preview");
+            }
+            preview("html", "HTML heading", "<article>");
+            preview("htm", null, "<table>");
+            preview("json", null, "class=\"source\"", "tok-string", "tok-number", "JSON sample");
+            preview("xml", null, "class=\"source\"", "tok-tag", "&lt;entry");
+            preview("java", null, "tok-keyword", "Example");
+            preview("kt", null, "tok-keyword", "tok-number");
+            preview("js", null, "tok-keyword", "tok-string");
+            preview("css", null, "class=\"source\"", "#17654f");
+            preview("log", null, "<th aria-hidden=\"true\">2", "INFO Second line");
+            preview("txt", "Text reader sample", "class=\"plain\"", "    indented text");
 
             Activity invalid = open("broken.pdf");
             await(invalid, "Choose another file", false);
@@ -46,12 +80,77 @@ public final class AndroidSmoke extends Instrumentation {
             await(invalid, "Browse files", false);
             close(invalid);
 
-            result.putString("stream", "\nReader smoke tests passed: PDF navigation, zoom, text, DOCX and corrupt file recovery.\n");
+            result.putString("stream", "\nReader smoke tests passed: all 21 file extensions, "
+                    + "PDF navigation, formatted content and corrupt PDF recovery.\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable error) {
             result.putString("stream", "\n" + Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    private void preview(String extension, String content, String... expected) throws Exception {
+        markup(extension, expected);
+        Activity activity = open("sample." + extension);
+        awaitWeb(activity);
+        if (content != null) awaitContent(content);
+        close(activity);
+    }
+
+    private Preview markup(String extension, String... expected) throws Exception {
+        ByteArrayOutputStream fixture = new ByteArrayOutputStream();
+        SmokeDocuments.write("sample." + extension, fixture);
+        Preview document = DocumentText.read(new ByteArrayInputStream(fixture.toByteArray()), extension);
+        String markup = document.sections.get(0).html;
+        for (String text : expected) {
+            if (!markup.contains(text)) throw new AssertionError(extension + " preview missing " + text);
+        }
+        return document;
+    }
+
+    private void awaitWeb(Activity activity) {
+        long deadline = SystemClock.uptimeMillis() + 15_000;
+        AtomicBoolean ready = new AtomicBoolean();
+        while (SystemClock.uptimeMillis() < deadline) {
+            runOnMainSync(() -> {
+                WebView web = findWebView(activity.getWindow().getDecorView());
+                ready.set(web != null && web.getContentHeight() > 0 && web.getProgress() == 100);
+            });
+            if (ready.get()) return;
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("The formatted view did not render " + activity.getIntent().getData());
+    }
+
+    private void awaitContent(String content) {
+        long deadline = SystemClock.uptimeMillis() + 8_000;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (containsContent(getUiAutomation().getRootInActiveWindow(), content)) return;
+            SystemClock.sleep(150);
+        }
+        throw new AssertionError("Android did not expose the rendered content: " + content);
+    }
+
+    private static boolean containsContent(AccessibilityNodeInfo node, String content) {
+        if (node == null) return false;
+        CharSequence text = node.getText();
+        if (text != null && text.toString().contains(content) && node.isVisibleToUser()) return true;
+        for (int index = 0; index < node.getChildCount(); index++) {
+            if (containsContent(node.getChild(index), content)) return true;
+        }
+        return false;
+    }
+
+    private static WebView findWebView(View view) {
+        if (view instanceof WebView) return (WebView) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                WebView child = findWebView(group.getChildAt(index));
+                if (child != null) return child;
+            }
+        }
+        return null;
     }
 
     private Activity open(String name) {

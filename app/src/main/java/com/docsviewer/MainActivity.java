@@ -20,6 +20,7 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
@@ -57,7 +58,8 @@ public final class MainActivity extends Activity {
     private int pageCount;
     private boolean busy;
     private boolean zoomed;
-    private List<String> sections;
+    private Preview preview;
+    private PreviewView previewView;
     private Bitmap page;
     private FrameLayout pdfViewport;
 
@@ -253,7 +255,10 @@ public final class MainActivity extends Activity {
         title.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         heading(title);
         info.addView(title);
-        info.addView(label(subtitle, 12, R.color.muted, false));
+        TextView detail = label(subtitle, 12, R.color.muted, false);
+        detail.setSingleLine();
+        detail.setEllipsize(TextUtils.TruncateAt.END);
+        info.addView(detail);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, WRAP, 1);
         params.setMarginStart(dp(10));
         params.setMarginEnd(dp(8));
@@ -288,7 +293,7 @@ public final class MainActivity extends Activity {
         position = initialPosition;
         busy = true;
         zoomed = false;
-        sections = null;
+        clearPreview();
         page = null;
         pdfViewport = null;
         readerToolbar("Opening file");
@@ -313,11 +318,11 @@ public final class MainActivity extends Activity {
                     int index = Math.min(Math.max(0, initialPosition), count - 1);
                     finishPdf(token, name, index, count, pdf.render(index, width, 2304));
                 } else {
-                    if (!DocumentText.isOffice(format) && !DocumentText.isPlain(format, mime)) {
+                    if (format.isEmpty()) {
                         throw new IOException("This format could not be opened. Try PDF, DOCX, XLSX, "
                                 + "PPTX, OpenDocument, or a text file.");
                     }
-                    List<String> loaded;
+                    Preview loaded;
                     try (InputStream input = getContentResolver().openInputStream(uri)) {
                         if (input == null) throw new IOException("The file could not be opened.");
                         loaded = DocumentText.read(input, format);
@@ -326,11 +331,11 @@ public final class MainActivity extends Activity {
                         if (token != requestId) return;
                         documentName = name;
                         kind = format;
-                        sections = loaded;
-                        position = Math.min(Math.max(0, initialPosition), sections.size() - 1);
+                        preview = loaded;
+                        position = Math.min(Math.max(0, initialPosition), preview.sections.size() - 1);
                         busy = false;
                         rememberPosition();
-                        showText();
+                        showPreview();
                     });
                 }
             } catch (Exception e) {
@@ -410,31 +415,39 @@ public final class MainActivity extends Activity {
         horizontal.post(() -> horizontal.scrollTo(Math.max(0, (pageWidth - width) / 2), 0));
     }
 
-    private void showText() {
-        boolean table = DocumentText.isTable(kind);
-        readerToolbar(DocumentText.isOffice(kind) ? "Text preview" : formatName(kind));
+    private void showPreview() {
+        Preview.Section section = preview.sections.get(position);
+        readerToolbar(section.title.isEmpty() ? formatName(kind) : section.title);
         LinearLayout screen = column();
-        ScrollView vertical = new ScrollView(this);
-        vertical.setFillViewport(true);
-        vertical.setBackgroundColor(color(R.color.surface));
-        TextView text = label(sections.get(position), table ? 14 : 17, R.color.ink, false);
-        text.setTextIsSelectable(true);
-        text.setLineSpacing(dp(4), 1);
-        int side = table ? dp(18) : readingMargin(680, 18);
-        text.setPadding(side, dp(20), side, dp(28));
-        if (table) {
-            text.setTypeface(Typeface.MONOSPACE);
-            text.setHorizontallyScrolling(true);
-            HorizontalScrollView horizontal = new HorizontalScrollView(this);
-            horizontal.setFillViewport(true);
-            horizontal.addView(text, new FrameLayout.LayoutParams(WRAP, WRAP));
-            vertical.addView(horizontal, new FrameLayout.LayoutParams(MATCH, WRAP));
-        } else {
-            vertical.addView(text, new FrameLayout.LayoutParams(MATCH, WRAP));
+        int token = requestId;
+        String name = documentName;
+        try {
+            if (previewView == null) {
+                previewView = new PreviewView(this, preview.assets, () -> showError(token, name,
+                        new IOException("The preview stopped. Try opening the document again.")));
+            } else if (previewView.getParent() instanceof ViewGroup) {
+                ((ViewGroup) previewView.getParent()).removeView(previewView);
+            }
+        } catch (IOException | RuntimeException error) {
+            showError(token, name, new IOException("Android System WebView could not display the preview.", error));
+            return;
         }
-        screen.addView(vertical, new LinearLayout.LayoutParams(MATCH, 0, 1));
-        if (sections.size() > 1) screen.addView(navigation("Section", sections.size(), false));
+        screen.addView(previewView, new LinearLayout.LayoutParams(MATCH, 0, 1));
+        if (preview.sections.size() > 1) {
+            screen.addView(navigation(preview.unit, preview.sections.size(), false));
+        }
         setBody(screen);
+        previewView.display(section, kind);
+    }
+
+    private void clearPreview() {
+        preview = null;
+        if (previewView == null) return;
+        if (previewView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) previewView.getParent()).removeView(previewView);
+        }
+        previewView.destroy();
+        previewView = null;
     }
 
     private View navigation(String unit, int count, boolean pdfMode) {
@@ -485,6 +498,16 @@ public final class MainActivity extends Activity {
 
     private void showJump(String unit, int count) {
         if (busy) return;
+        if (preview != null && (unit.equals("sheet") || unit.equals("slide"))) {
+            String[] titles = new String[count];
+            for (int i = 0; i < count; i++) titles[i] = preview.sections.get(i).title;
+            new AlertDialog.Builder(this).setTitle(unit.equals("sheet") ? "Worksheets" : "Slides")
+                    .setSingleChoiceItems(titles, position, (dialog, index) -> {
+                        dialog.dismiss();
+                        goTo(index);
+                    }).setNegativeButton("Cancel", null).show();
+            return;
+        }
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
         input.setSingleLine(true);
@@ -515,11 +538,11 @@ public final class MainActivity extends Activity {
 
     private void goTo(int index) {
         if (busy || index == position) return;
-        if (sections != null) {
-            if (index < 0 || index >= sections.size()) return;
+        if (preview != null) {
+            if (index < 0 || index >= preview.sections.size()) return;
             position = index;
             rememberPosition();
-            showText();
+            showPreview();
         } else if (page != null && index >= 0 && index < pageCount) {
             busy = true;
             int token = requestId;
@@ -558,6 +581,7 @@ public final class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (token != requestId) return;
             busy = false;
+            clearPreview();
             page = null;
             pdfViewport = null;
             documentName = name;
@@ -601,7 +625,7 @@ public final class MainActivity extends Activity {
         requestId++;
         discardPendingGrant();
         documentUri = null;
-        sections = null;
+        clearPreview();
         page = null;
         pdfViewport = null;
         worker.execute(this::closePdf);
@@ -625,6 +649,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         requestId++;
+        clearPreview();
         if (isFinishing()) discardPendingGrant();
         worker.execute(this::closePdf);
         worker.shutdown();
@@ -659,6 +684,15 @@ public final class MainActivity extends Activity {
             case "odp": return "OpenDocument presentation";
             case "csv": return "CSV table";
             case "tsv": return "TSV table";
+            case "htm":
+            case "html": return "HTML document";
+            case "json": return "JSON";
+            case "xml": return "XML";
+            case "java": return "Java source";
+            case "kt": return "Kotlin source";
+            case "js": return "JavaScript source";
+            case "css": return "CSS source";
+            case "log": return "Log file";
             default: return "Text document";
         }
     }

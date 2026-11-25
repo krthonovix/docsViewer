@@ -15,8 +15,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 public final class SmokeFiles extends ContentProvider {
     @Override public boolean onCreate() {
@@ -25,11 +23,10 @@ public final class SmokeFiles extends ContentProvider {
 
     @Override public String getType(Uri uri) {
         String name = uri.getLastPathSegment();
-        if ("sample.txt".equals(name)) return "text/plain";
-        if ("sample.docx".equals(name)) {
-            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        }
         if ("sample.pdf".equals(name) || "broken.pdf".equals(name)) return "application/pdf";
+        if (name != null && name.matches("sample\\.(docx|xlsx|pptx|odt|ods|odp|txt|md|markdown|csv|tsv|html|htm|json|xml|java|kt|js|css|log)")) {
+            return "application/octet-stream";
+        }
         return null;
     }
 
@@ -61,20 +58,11 @@ public final class SmokeFiles extends ContentProvider {
                     }
                     break;
                 }
-                case "sample.docx":
-                    try (ZipOutputStream zip = new ZipOutputStream(output)) {
-                        zip.putNextEntry(new ZipEntry("word/document.xml"));
-                        zip.write(("<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
-                                + "<w:body><w:p><w:r><w:t>Office preview sample</w:t></w:r></w:p></w:body></w:document>")
-                                .getBytes(StandardCharsets.UTF_8));
-                        zip.closeEntry();
-                    }
-                    break;
-                case "sample.txt":
-                    output.write("Text reader sample".getBytes(StandardCharsets.UTF_8));
+                case "broken.pdf":
+                    output.write("Invalid PDF".getBytes(StandardCharsets.UTF_8));
                     break;
                 default:
-                    output.write("Invalid PDF".getBytes(StandardCharsets.UTF_8));
+                    SmokeDocuments.write(name, output);
                     break;
             }
             return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);

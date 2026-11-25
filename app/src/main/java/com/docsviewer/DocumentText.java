@@ -1,34 +1,45 @@
 package com.docsviewer;
 
-import android.util.Xml;
+import org.commonmark.Extension;
+import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension;
+import org.commonmark.ext.gfm.tables.TablesExtension;
+import org.commonmark.ext.task.list.items.TaskListItemsExtension;
+import org.commonmark.parser.Parser;
+import org.commonmark.renderer.html.HtmlRenderer;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.safety.Cleaner;
+import org.jsoup.safety.Safelist;
 
-import org.xmlpull.v1.XmlPullParser;
-
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 
 final class DocumentText {
     private static final int INPUT_LIMIT = 16 * 1024 * 1024;
-    private static final int OFFICE_TEXT_LIMIT = 2_000_000;
-    private static final int SECTION_SIZE = 24_000;
-    private static final Pattern NUMBERED_PART =
-            Pattern.compile("(xl/worksheets/sheet|ppt/slides/slide)([0-9]+)\\.xml");
+    private static final int SECTION_SIZE = 32_000;
+    private static final Pattern SOURCE_TOKEN = Pattern.compile(
+            "(?<comment><!--.*?-->|/\\*.*?\\*/|//[^\\r\\n]*)"
+            + "|(?<string>\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')"
+            + "|(?<tag></?[\\w:.-]+|/?>)"
+            + "|(?<keyword>\\b(?:class|interface|enum|record|public|private|protected|"
+            + "abstract|static|final|new|return|throw|try|catch|finally|for|while|if|else|switch|case|"
+            + "import|package|fun|val|var|let|const|function|def|true|false|null|undefined|async|await)\\b)"
+            + "|(?<number>\\b\\d+(?:\\.\\d+)?\\b)", Pattern.DOTALL);
 
     static String detectFormat(String name, String mime) {
         if (mime != null) {
-            switch (mime) {
+            switch (mime.split(";", 2)[0].toLowerCase(Locale.ROOT)) {
                 case "application/pdf": return "pdf";
                 case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": return "docx";
                 case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": return "xlsx";
@@ -43,238 +54,209 @@ final class DocumentText {
             }
         }
         int dot = name.lastIndexOf('.');
-        return dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        String extension = dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        if (extension.matches("pdf|docx|xlsx|pptx|odt|ods|odp|txt|md|markdown|csv|tsv|json|xml|html|htm|log|java|kt|js|css")) {
+            return extension;
+        }
+        if (mime != null) {
+            if (mime.equals("application/json")) return "json";
+            if (mime.equals("application/xml") || mime.equals("text/xml")) return "xml";
+            if (mime.equals("text/html")) return "html";
+            if (mime.startsWith("text/")) return extension.isEmpty() ? "txt" : extension;
+        }
+        return "";
     }
 
-    static boolean isOffice(String kind) {
-        return kind.matches("docx|xlsx|pptx|odt|ods|odp");
+    static Preview read(InputStream input, String kind) throws IOException {
+        Preview result;
+        switch (kind) {
+            case "docx": result = WordPreview.read(OfficePackage.read(input)); break;
+            case "xlsx": result = SpreadsheetPreview.xlsx(OfficePackage.read(input)); break;
+            case "pptx": result = SlidePreview.pptx(OfficePackage.read(input)); break;
+            case "odt": case "ods": case "odp":
+                result = OdfPreview.read(OfficePackage.read(input), kind);
+                break;
+            default: result = readText(plain(input), kind); break;
+        }
+        if (result.sections.isEmpty()) result.add("", "<p>No readable content found.</p>");
+        return result;
     }
 
-    static boolean isTable(String kind) {
-        return kind.matches("xlsx|ods|csv|tsv");
+    private static Preview readText(String source, String format) throws IOException {
+        Preview preview = new Preview("Section");
+        switch (format) {
+            case "md": case "markdown":
+                if (source.length() > 1_500_000) throw new IOException("This Markdown file is too large to format.");
+                preview.add("", "<main class=\"reading\">" + Markdown.render(source) + "</main>");
+                break;
+            case "html": case "htm":
+                if (source.length() > 2_000_000) throw new IOException("This HTML file is too large to format.");
+                preview.add("", "<main class=\"reading\">" + html(source) + "</main>");
+                break;
+            case "csv": case "tsv":
+                Grid.delimited(source, format.equals("csv") ? ',' : '\t').append(preview);
+                break;
+            case "json":
+                sections(preview, prettyJson(source), true, true);
+                break;
+            case "xml":
+                sections(preview, prettyXml(source), true, true);
+                break;
+            case "java": case "kt": case "js": case "css":
+                sections(preview, source, true, true);
+                break;
+            case "log":
+                sections(preview, source, true, false);
+                break;
+            default:
+                sections(preview, source, false, false);
+        }
+        return preview;
     }
 
-    static boolean isPlain(String kind, String mime) {
-        return kind.matches("txt|md|markdown|csv|tsv|json|xml|html|htm|log|java|kt|js|css")
-                || (mime != null && mime.startsWith("text/"));
+    private static String html(String source) {
+        Document parsed = Jsoup.parse(source);
+        Safelist safelist = Safelist.relaxed()
+                .addTags("article", "section", "main", "header", "footer", "figure", "figcaption",
+                        "details", "summary", "mark", "kbd", "samp", "time", "colgroup", "col")
+                .addAttributes(":all", "style", "class", "id", "dir", "lang")
+                .addAttributes("ol", "start", "reversed")
+                .addAttributes("img", "alt", "width", "height")
+                .addProtocols("img", "src", "data");
+        Document clean = new Cleaner(safelist).clean(parsed);
+        for (org.jsoup.nodes.Element image : clean.select("img[src]")) {
+            if (!image.attr("src").matches("(?is)data:image/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\\s]+")) {
+                image.removeAttr("src");
+            }
+        }
+        clean.outputSettings().prettyPrint(false);
+        StringBuilder styles = new StringBuilder();
+        for (org.jsoup.nodes.Element style : parsed.select("head style")) {
+            styles.append("<style>").append(style.data().replace("<", "\\3c ")).append("</style>");
+        }
+        return styles.append(clean.body().html()).toString();
     }
 
-    static List<String> read(InputStream input, String kind) throws Exception {
-        String text = isOffice(kind) ? office(input) : plain(input);
-        List<String> sections = new ArrayList<>();
+    private static String prettyXml(String source) {
+        if (source.length() > 200_000 || !source.contains("><")) return source;
+        Document document = Jsoup.parse(source, "", org.jsoup.parser.Parser.xmlParser());
+        document.outputSettings().indentAmount(2).prettyPrint(true);
+        return document.outerHtml();
+    }
+
+    private static String prettyJson(String source) {
+        // Keep very large files and malformed JSON readable without changing their contents.
+        if (source.length() > 200_000 || nesting(source) > 80) return source;
+        try {
+            JSONTokener tokener = new JSONTokener(source);
+            Object value = tokener.nextValue();
+            if (tokener.nextClean() != 0) return source;
+            if (value instanceof JSONObject) return ((JSONObject) value).toString(2);
+            if (value instanceof JSONArray) return ((JSONArray) value).toString(2);
+        } catch (JSONException ignored) {
+            // Fall back to the original source.
+        }
+        return source;
+    }
+
+    private static int nesting(String source) {
+        int depth = 0;
+        int maximum = 0;
+        boolean quoted = false;
+        boolean escaped = false;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') quoted = false;
+            } else if (c == '"') {
+                quoted = true;
+            } else if (c == '{' || c == '[') {
+                maximum = Math.max(maximum, ++depth);
+            } else if (c == '}' || c == ']') {
+                depth--;
+            }
+        }
+        return maximum;
+    }
+
+    private static void sections(Preview preview, String text, boolean source, boolean highlight)
+            throws IOException {
+        int line = 1;
         for (int start = 0; start < text.length();) {
             int end = Math.min(start + SECTION_SIZE, text.length());
             if (end < text.length()) {
                 int newline = text.lastIndexOf('\n', end - 1);
-                if (newline > start + SECTION_SIZE / 2) end = newline + 1;
+                if (newline > start) end = newline + 1;
                 if (Character.isHighSurrogate(text.charAt(end - 1))) end--;
             }
-            sections.add(text.substring(start, end));
+            String section = text.substring(start, end);
+            if (source) {
+                StringBuilder html = new StringBuilder("<div class=\"source\"><table><tbody>");
+                String[] lines = section.split("\\r\\n|\\n|\\r", -1);
+                int count = lines.length;
+                if (end < text.length() && section.endsWith("\n")) count--;
+                for (int i = 0; i < count; i++) {
+                    html.append("<tr><th aria-hidden=\"true\">").append(line++)
+                            .append("</th><td>").append(highlight ? highlight(lines[i]) : Markup.escape(lines[i]))
+                            .append("</td></tr>");
+                }
+                preview.add("", html.append("</tbody></table></div>").toString());
+            } else {
+                preview.add("", "<div class=\"plain\">" + Markup.escape(section) + "</div>");
+            }
             start = end;
         }
-        if (sections.isEmpty()) sections.add("No readable text found in this document.");
-        return sections;
+    }
+
+    private static String highlight(String line) {
+        if (line.length() > 4000) return Markup.escape(line);
+        Matcher matcher = SOURCE_TOKEN.matcher(line);
+        StringBuilder html = new StringBuilder();
+        int start = 0;
+        while (matcher.find()) {
+            String kind = "number";
+            for (String candidate : new String[]{"comment", "string", "tag", "keyword"}) {
+                if (matcher.group(candidate) != null) {
+                    kind = candidate;
+                    break;
+                }
+            }
+            html.append(Markup.escape(line.substring(start, matcher.start())))
+                    .append("<span class=\"tok-").append(kind).append("\">")
+                    .append(Markup.escape(matcher.group())).append("</span>");
+            start = matcher.end();
+        }
+        return html.append(Markup.escape(line.substring(start))).toString();
     }
 
     private static String plain(InputStream input) throws IOException {
-        byte[] bytes = readLimited(input, INPUT_LIMIT);
-        if (bytes.length >= 2) {
-            int marker = (bytes[0] & 0xff) << 8 | (bytes[1] & 0xff);
-            if (marker == 0xfffe || marker == 0xfeff) {
-                return new String(bytes, StandardCharsets.UTF_16);
-            }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        byte[] block = new byte[16 * 1024];
+        for (int count; (count = input.read(block)) != -1;) {
+            if (count > INPUT_LIMIT - bytes.size()) throw new IOException("The file exceeds 16 MB.");
+            bytes.write(block, 0, count);
         }
-        String text = new String(bytes, StandardCharsets.UTF_8);
+        byte[] data = bytes.toByteArray();
+        if (data.length >= 2) {
+            int marker = (data[0] & 0xff) << 8 | (data[1] & 0xff);
+            if (marker == 0xfffe || marker == 0xfeff) return new String(data, StandardCharsets.UTF_16);
+        }
+        String text = new String(data, StandardCharsets.UTF_8);
         return text.startsWith("\ufeff") ? text.substring(1) : text;
     }
 
-    private static byte[] readLimited(InputStream input, int limit) throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[16 * 1024];
-        for (int count; (count = input.read(buffer)) != -1;) {
-            if (count > limit - output.size()) {
-                throw new IOException("The document exceeds the 16 MB reading limit.");
-            }
-            output.write(buffer, 0, count);
+    private static final class Markdown {
+        private static final List<Extension> EXTENSIONS = Arrays.asList(TablesExtension.create(),
+                StrikethroughExtension.create(), TaskListItemsExtension.create());
+        private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
+        private static final HtmlRenderer RENDERER = HtmlRenderer.builder().extensions(EXTENSIONS)
+                .escapeHtml(true).sanitizeUrls(true).build();
+
+        static String render(String text) {
+            return RENDERER.render(PARSER.parse(text));
         }
-        return output.toByteArray();
-    }
-
-    private static String office(InputStream input) throws Exception {
-        Map<String, byte[]> entries = new TreeMap<>(DocumentText::compareParts);
-        int remaining = INPUT_LIMIT;
-        try (ZipInputStream zip = new ZipInputStream(input)) {
-            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;) {
-                String path = entry.getName();
-                if (path.equals("word/document.xml") || path.equals("content.xml")
-                        || path.equals("xl/sharedStrings.xml") || NUMBERED_PART.matcher(path).matches()) {
-                    byte[] data = readLimited(zip, remaining);
-                    remaining -= data.length;
-                    entries.put(path, data);
-                }
-            }
-        }
-
-        List<String> shared = sharedStrings(entries.remove("xl/sharedStrings.xml"));
-        if (entries.isEmpty()) throw new IOException("No readable document content was found.");
-        StringBuilder text = new StringBuilder();
-        for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
-            String path = entry.getKey();
-            Matcher numbered = NUMBERED_PART.matcher(path);
-            if (numbered.matches()) {
-                text.append(path.startsWith("ppt/") ? "Slide " : "Sheet ")
-                        .append(numbered.group(2)).append("\n\n");
-            }
-            extract(entry.getValue(), text, shared, path);
-            text.append("\n\n");
-        }
-        return text.toString().trim();
-    }
-
-    private static int compareParts(String a, String b) {
-        Matcher left = NUMBERED_PART.matcher(a);
-        Matcher right = NUMBERED_PART.matcher(b);
-        if (left.matches() && right.matches() && left.group(1).equals(right.group(1))) {
-            int length = Integer.compare(left.group(2).length(), right.group(2).length());
-            if (length != 0) return length;
-        }
-        return a.compareTo(b);
-    }
-
-    private static XmlPullParser parser(byte[] xml) throws Exception {
-        XmlPullParser parser = Xml.newPullParser();
-        parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true);
-        parser.setInput(new ByteArrayInputStream(xml), null);
-        return parser;
-    }
-
-    private static List<String> sharedStrings(byte[] xml) throws Exception {
-        List<String> list = new ArrayList<>();
-        if (xml == null) return list;
-        XmlPullParser parser = parser(xml);
-        StringBuilder string = null;
-        for (int event; (event = parser.next()) != XmlPullParser.END_DOCUMENT;) {
-            String tag = parser.getName();
-            if (event == XmlPullParser.START_TAG && "si".equals(tag)) {
-                string = new StringBuilder();
-            } else if (event == XmlPullParser.START_TAG && "t".equals(tag) && string != null) {
-                string.append(parser.nextText());
-            } else if (event == XmlPullParser.END_TAG && "si".equals(tag) && string != null) {
-                list.add(string.toString());
-                string = null;
-            }
-        }
-        return list;
-    }
-
-    private static void extract(byte[] xml, StringBuilder text, List<String> shared, String path)
-            throws Exception {
-        XmlPullParser parser = parser(xml);
-        boolean sheet = path.startsWith("xl/");
-        boolean odf = path.equals("content.xml");
-        String cellType = "";
-        int nextColumn = 0;
-        int bodyDepth = 0;
-        int paragraphDepth = 0;
-        boolean cellHasValue = false;
-        String formula = null;
-        for (int event; (event = parser.next()) != XmlPullParser.END_DOCUMENT;) {
-            String tag = parser.getName();
-            if (odf && "body".equals(tag) && event == XmlPullParser.START_TAG) {
-                bodyDepth = parser.getDepth();
-            }
-            if (odf && "body".equals(tag) && event == XmlPullParser.END_TAG) bodyDepth = 0;
-            if (odf && (bodyDepth == 0 || parser.getDepth() <= bodyDepth)) continue;
-
-            if (event == XmlPullParser.START_TAG) {
-                switch (tag) {
-                    case "p":
-                    case "h":
-                        if (odf) paragraphDepth = parser.getDepth();
-                        break;
-                    case "s":
-                        if (odf && paragraphDepth > 0) text.append(' ');
-                        break;
-                    case "c":
-                        if (sheet) {
-                            cellType = parser.getAttributeValue(null, "t");
-                            int column = Math.max(nextColumn, columnIndex(parser.getAttributeValue(null, "r")));
-                            while (nextColumn < column) {
-                                text.append('\t');
-                                nextColumn++;
-                            }
-                            cellHasValue = false;
-                            formula = null;
-                        }
-                        break;
-                    case "v":
-                        if (sheet) {
-                            String value = parser.nextText();
-                            text.append("s".equals(cellType) ? sharedValue(shared, value) : value);
-                            cellHasValue = !value.isEmpty();
-                        }
-                        break;
-                    case "f":
-                        if (sheet) formula = parser.nextText();
-                        break;
-                    case "t":
-                        if (!odf) {
-                            text.append(parser.nextText());
-                            cellHasValue = true;
-                        }
-                        break;
-                    case "tab":
-                        text.append('\t');
-                        break;
-                    case "br":
-                    case "line-break":
-                        text.append('\n');
-                        break;
-                    default:
-                        break;
-                }
-            } else if (event == XmlPullParser.TEXT && odf) {
-                if (paragraphDepth > 0) text.append(parser.getText());
-            } else if (event == XmlPullParser.END_TAG) {
-                if (sheet && "c".equals(tag)) {
-                    if (!cellHasValue && formula != null && !formula.isEmpty()) {
-                        text.append('=').append(formula);
-                    }
-                    text.append('\t');
-                    nextColumn++;
-                } else if ("p".equals(tag) || "h".equals(tag)
-                        || "row".equals(tag) || "table-row".equals(tag)) {
-                    text.append('\n');
-                    nextColumn = 0;
-                    if (paragraphDepth == parser.getDepth()) paragraphDepth = 0;
-                } else if ("table-cell".equals(tag)) {
-                    text.append('\t');
-                }
-            }
-            if (text.length() > OFFICE_TEXT_LIMIT) {
-                throw new IOException("This document contains too much text for the preview.");
-            }
-        }
-    }
-
-    private static String sharedValue(List<String> shared, String index) {
-        try {
-            return shared.get(Integer.parseInt(index));
-        } catch (NumberFormatException | IndexOutOfBoundsException e) {
-            return index;
-        }
-    }
-
-    private static int columnIndex(String reference) {
-        if (reference == null) return 0;
-        int column = 0;
-        for (int i = 0; i < reference.length(); i++) {
-            char character = reference.charAt(i);
-            if (character < 'A' || character > 'Z') break;
-            column = column * 26 + character - 'A' + 1;
-            if (column > 16_384) return 0;
-        }
-        return Math.max(0, column - 1);
     }
 
     private DocumentText() {}

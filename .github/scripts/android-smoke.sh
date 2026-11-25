@@ -35,7 +35,7 @@ echo "Dark theme home screen rendered successfully."
 adb shell am force-stop "$package"
 adb shell cmd uimode night no
 adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-timeout 90s adb shell am instrument -w "$package.test/$package.AndroidSmoke" | tee "$diagnostics/reader.txt"
+timeout 180s adb shell am instrument -w "$package.test/$package.AndroidSmoke" | tee "$diagnostics/reader.txt"
 grep -q 'Reader smoke tests passed' "$diagnostics/reader.txt"
 adb logcat -d -b crash > "$diagnostics/crash.txt"
 if grep -q "Process: $package," "$diagnostics/crash.txt"; then

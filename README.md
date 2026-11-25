@@ -1,13 +1,15 @@
 # Docs Viewer
 
-An offline document viewer for Android 8.0+. Use **Browse files** or open a supported file from another app. The reader follows the system light or dark theme. Files picked through Android's file browser can appear in the recent list and reopen at the last page or text section.
+An offline document viewer for Android 8.0+. Use **Browse files** or open a supported file from another app. Files picked through Android's file browser can appear in the recent list and reopen at the last page, sheet, slide, or section.
 
 - PDF: Android PdfRenderer draws one page at a time. Tap the page count to jump to a page, or use **2×** and **Fit** to switch between views.
-- DOCX, XLSX, PPTX and ODT/ODS/ODP: extracts text into a selectable reading view. Layout, images, formulas, rich formatting and sheet coordinates are not faithfully rendered. Spreadsheet and presentation order follows internal file numbers, which may differ from the order displayed by Office. Password-protected files are not supported.
-- TXT, Markdown and common source files open as selectable, wrapped text. CSV, TSV and spreadsheet previews can scroll sideways. Long text is split into sections to keep scrolling responsive.
-- Legacy DOC/XLS/PPT, EPUB and other formats are not supported. This is not a universal document renderer.
+- DOCX and ODT render headings, lists, text styles, tables and embedded raster images in a reflowing reading view.
+- XLSX and ODS show named worksheets in order, with a scrollable grid, column and row labels, merged cells and common cell formatting. CSV and TSV use the same grid and handle quoted fields.
+- PPTX and ODP show slides on a canvas with positioned text, images and common shapes. Tap the slide count to jump to a slide.
+- Markdown renders headings, lists, quotes, code, tables and task lists. HTML shows an offline preview with scripts disabled. JSON and XML have structured source views, and Java, Kotlin, JavaScript, CSS and logs show line numbers. TXT keeps its whitespace and wraps to the screen.
+- Office previews approximate the original layouts. Features such as complex charts, macros, animations, formula recalculation, precise Word pagination, and password protection are outside the reader's scope. Legacy DOC/XLS/PPT and EPUB are unsupported.
 
-The viewer has no runtime dependencies or network permission. It opens seekable PDFs directly and makes a temporary cache copy only for providers that stream the file. Text extraction has a 16 MB input limit for text or the Office XML parts being read, and a two-million character limit for extracted Office text.
+PDFs open with Android's native renderer. Formatted previews use Android System WebView, CommonMark and jsoup. The app has no network permission. External images, scripts and stylesheets are not loaded by previews. Text inputs are limited to 16 MB, with smaller budgets for complex formatted pages. Office archives have limits for expanded size and preview complexity.
 
 ## Build
 
